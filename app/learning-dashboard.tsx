@@ -53,6 +53,67 @@ function blankForm(): DayForm {
   };
 }
 
+function draftKey(userId: string | undefined, dateKey: string) {
+  return `learning-os:day-draft:${userId ?? "anonymous"}:${dateKey}`;
+}
+
+function isDayForm(value: unknown): value is DayForm {
+  if (!value || typeof value !== "object") return false;
+
+  const form = value as Record<string, unknown>;
+  return (
+    typeof form.top_goal === "string" &&
+    typeof form.java_ai_minutes === "number" && Number.isFinite(form.java_ai_minutes) &&
+    typeof form.platform_minutes === "number" && Number.isFinite(form.platform_minutes) &&
+    typeof form.foundation_minutes === "number" && Number.isFinite(form.foundation_minutes) &&
+    typeof form.evidence === "string" &&
+    typeof form.blocker === "string" &&
+    typeof form.reflection === "string" &&
+    typeof form.completed === "boolean"
+  );
+}
+
+function readDraft(key: string): DayForm | null {
+  try {
+    const value = window.sessionStorage.getItem(key);
+    if (!value) return null;
+
+    const draft: unknown = JSON.parse(value);
+    return isDayForm(draft) ? draft : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeDraft(key: string, form: DayForm) {
+  try {
+    window.sessionStorage.setItem(key, JSON.stringify(form));
+  } catch {
+    // The dashboard remains usable when browser storage is unavailable.
+  }
+}
+
+function clearDraft(key: string) {
+  try {
+    window.sessionStorage.removeItem(key);
+  } catch {
+    // The dashboard remains usable when browser storage is unavailable.
+  }
+}
+
+function sameForm(left: DayForm, right: DayForm) {
+  return (
+    left.top_goal === right.top_goal &&
+    left.java_ai_minutes === right.java_ai_minutes &&
+    left.platform_minutes === right.platform_minutes &&
+    left.foundation_minutes === right.foundation_minutes &&
+    left.evidence === right.evidence &&
+    left.blocker === right.blocker &&
+    left.reflection === right.reflection &&
+    left.completed === right.completed
+  );
+}
+
 function dateLabel(dateKey: string) {
   const date = new Date(`${dateKey}T12:00:00`);
   return new Intl.DateTimeFormat("zh-CN", {
@@ -80,6 +141,10 @@ export function LearningDashboard() {
   const [message, setMessage] = useState("");
 
   const configured = isSupabaseConfigured;
+  const currentDraftKey = useMemo(
+    () => draftKey(session?.user.id, selectedDate),
+    [selectedDate, session?.user.id],
+  );
   const totalMinutes = form.java_ai_minutes + form.platform_minutes + form.foundation_minutes;
   const weekMinutes = weeklyRecords.reduce(
     (sum, record) => sum + record.java_ai_minutes + record.platform_minutes + record.foundation_minutes,
@@ -109,9 +174,12 @@ export function LearningDashboard() {
   }, [configured]);
 
   useEffect(() => {
+    let cancelled = false;
+
     async function load() {
       setMessage("");
-      setForm(blankForm());
+      const initialDraft = readDraft(currentDraftKey);
+      setForm(initialDraft ?? blankForm());
       setWeeklyRecords([]);
       setAuthorized(false);
 
@@ -125,6 +193,8 @@ export function LearningDashboard() {
         .select("user_id")
         .eq("user_id", session.user.id)
         .maybeSingle();
+
+      if (cancelled) return;
 
       if (accessError || !access) {
         setMessage("此 GitHub 账号尚未获授权。请按 README 将你的 Supabase 用户 ID 写入允许名单。");
@@ -149,10 +219,15 @@ export function LearningDashboard() {
           .order("record_date", { ascending: true }),
       ]);
 
+      if (cancelled) return;
+
       if (todayError || weekError) {
         setMessage("读取同步记录失败。请检查 Supabase 表结构、RLS 策略和网络连接。");
       } else {
-        if (today) {
+        const latestDraft = readDraft(currentDraftKey);
+        if (latestDraft) {
+          setForm(latestDraft);
+        } else if (today) {
           setForm({
             top_goal: today.top_goal ?? "",
             java_ai_minutes: today.java_ai_minutes ?? 0,
@@ -170,11 +245,22 @@ export function LearningDashboard() {
     }
 
     load();
-  }, [configured, selectedDate, session]);
+    return () => {
+      cancelled = true;
+    };
+  }, [configured, currentDraftKey, selectedDate, session]);
+
+  function updateForm(update: (current: DayForm) => DayForm) {
+    setForm((current) => {
+      const next = update(current);
+      writeDraft(currentDraftKey, next);
+      return next;
+    });
+  }
 
   function updateNumber(field: "java_ai_minutes" | "platform_minutes" | "foundation_minutes", value: string) {
     const parsed = Math.max(0, Number(value) || 0);
-    setForm((current) => ({ ...current, [field]: parsed }));
+    updateForm((current) => ({ ...current, [field]: parsed }));
   }
 
   async function signIn() {
@@ -191,6 +277,7 @@ export function LearningDashboard() {
     const client = getSupabase();
     if (!client) return;
     await client.auth.signOut();
+    clearDraft(currentDraftKey);
     setForm(blankForm());
     setWeeklyRecords([]);
   }
@@ -212,9 +299,11 @@ export function LearningDashboard() {
     }
 
     setSaving(true);
+    const savedForm = form;
+    const savedDraftKey = currentDraftKey;
     const { error } = await client.from("learning_days").upsert(
       {
-        ...form,
+        ...savedForm,
         user_id: session.user.id,
         record_date: selectedDate,
       },
@@ -225,6 +314,8 @@ export function LearningDashboard() {
       setMessage(`保存失败：${error.message}`);
     } else {
       setMessage("已同步。现在的学习记录已经是一条可复盘的职业证据。");
+      const latestDraft = readDraft(savedDraftKey);
+      if (latestDraft && sameForm(latestDraft, savedForm)) clearDraft(savedDraftKey);
       const refreshed = await client
         .from("learning_days")
         .select("*")
@@ -317,7 +408,7 @@ export function LearningDashboard() {
             <div className="field-grid">
               <label className="field field-full">
                 <span>今天最重要的一件事</span>
-                <input value={form.top_goal} placeholder="例如：完成 Python 巡检汇总脚本的第一个可运行版本" onChange={(event) => setForm((current) => ({ ...current, top_goal: event.target.value }))} />
+                <input value={form.top_goal} placeholder="例如：完成 Python 巡检汇总脚本的第一个可运行版本" onChange={(event) => updateForm((current) => ({ ...current, top_goal: event.target.value }))} />
               </label>
               <label className="field">
                 <span>Java / AI 应用（分钟）</span>
@@ -333,19 +424,19 @@ export function LearningDashboard() {
               </label>
               <label className="field field-full">
                 <span>今天留下的证据</span>
-                <textarea value={form.evidence} placeholder="链接、提交、脚本输出、实验结果，或一条脱敏的问题记录。" onChange={(event) => setForm((current) => ({ ...current, evidence: event.target.value }))} />
+                <textarea value={form.evidence} placeholder="链接、提交、脚本输出、实验结果，或一条脱敏的问题记录。" onChange={(event) => updateForm((current) => ({ ...current, evidence: event.target.value }))} />
               </label>
               <label className="field">
                 <span>卡点 / 待解决问题</span>
-                <textarea value={form.blocker} placeholder="写下具体症状，而非“今天状态不好”。" onChange={(event) => setForm((current) => ({ ...current, blocker: event.target.value }))} />
+                <textarea value={form.blocker} placeholder="写下具体症状，而非“今天状态不好”。" onChange={(event) => updateForm((current) => ({ ...current, blocker: event.target.value }))} />
               </label>
               <label className="field field-full">
                 <span>复盘与明日第一步</span>
-                <textarea value={form.reflection} placeholder="例如：脚本输入边界还没想清楚；明天先补 3 组异常样例和日志。" onChange={(event) => setForm((current) => ({ ...current, reflection: event.target.value }))} />
+                <textarea value={form.reflection} placeholder="例如：脚本输入边界还没想清楚；明天先补 3 组异常样例和日志。" onChange={(event) => updateForm((current) => ({ ...current, reflection: event.target.value }))} />
               </label>
             </div>
             <div className="form-footer">
-              <label className="checkbox"><input type="checkbox" checked={form.completed} onChange={(event) => setForm((current) => ({ ...current, completed: event.target.checked }))} /> 今天已形成最小闭环</label>
+              <label className="checkbox"><input type="checkbox" checked={form.completed} onChange={(event) => updateForm((current) => ({ ...current, completed: event.target.checked }))} /> 今天已形成最小闭环</label>
               <div className="save-hint">{configured && session && authorized ? "保存后两台电脑会读取同一份记录。" : "完成 Supabase 配置和账号授权后才能写入云端。"}</div>
               <button className="button" type="button" disabled={saving} onClick={saveDay}>{saving ? "正在同步…" : "保存今日记录"}</button>
             </div>
