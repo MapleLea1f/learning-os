@@ -14,6 +14,7 @@ create table if not exists public.learning_days (
   java_ai_minutes integer not null default 0 check (java_ai_minutes >= 0),
   platform_minutes integer not null default 0 check (platform_minutes >= 0),
   foundation_minutes integer not null default 0 check (foundation_minutes >= 0),
+  events jsonb not null default '[]'::jsonb,
   evidence text not null default '',
   blocker text not null default '',
   reflection text not null default '',
@@ -22,6 +23,11 @@ create table if not exists public.learning_days (
   updated_at timestamptz not null default now(),
   unique (user_id, record_date)
 );
+
+-- Safe for existing installations: store the event title, category and timer
+-- result alongside the existing aggregate minute columns.
+alter table public.learning_days
+  add column if not exists events jsonb not null default '[]'::jsonb;
 
 create index if not exists learning_days_user_date_idx
   on public.learning_days (user_id, record_date desc);

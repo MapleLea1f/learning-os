@@ -4,11 +4,18 @@ import { useEffect, useMemo, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import { getSupabase, isSupabaseConfigured } from "./supabase-client";
 
+type LearningCategory = "java_ai" | "platform" | "foundation";
+
+type LearningEvent = {
+  id: string;
+  title: string;
+  category: LearningCategory;
+  minutes: number;
+};
+
 type DayForm = {
   top_goal: string;
-  java_ai_minutes: number;
-  platform_minutes: number;
-  foundation_minutes: number;
+  events: LearningEvent[];
   evidence: string;
   blocker: string;
   reflection: string;
@@ -19,18 +26,48 @@ type StoredDay = DayForm & {
   id: string;
   record_date: string;
   user_id: string;
+  java_ai_minutes?: number;
+  platform_minutes?: number;
+  foundation_minutes?: number;
+  events?: unknown;
 };
 
-const defaultTasks = [
-  "记录一条脱敏的工程问题或观察",
-  "留下一个代码、脚本或实验提交",
-  "推进本周的知识助手项目一个小步骤",
+const historyPageSize = 8;
+
+const categoryMeta: Record<LearningCategory, { label: string; target: number; description: string }> = {
+  java_ai: { label: "Java / AI 应用", target: 45, description: "服务设计、检索评测、Java 工程" },
+  platform: { label: "云原生 / 平台", target: 35, description: "部署、监控、CI/CD、可靠性" },
+  foundation: { label: "算法 / 英语", target: 20, description: "高频题、英文文档、职业表达" },
+};
+
+const careerStages = [
+  {
+    range: "现在 · 0–6 个月",
+    title: "把运维经历变成工程证据",
+    outcome: "至少留下自动化、监控或变更复盘等可验证成果。",
+  },
+  {
+    range: "6–12 个月",
+    title: "交付一个能解释清楚的作品集",
+    outcome: "开发、部署、观测和一次失败恢复都能完整演示。",
+  },
+  {
+    range: "12–24 个月",
+    title: "进入更高职责密度的工程岗位",
+    outcome: "面向云原生 Java、AI 应用平台、SRE 或中间件方向投递。",
+  },
+  {
+    range: "3–5 年",
+    title: "负责一项服务或平台能力的结果",
+    outcome: "对稳定性、交付效率、成本或系统设计形成责任边界。",
+  },
 ];
 
-const selfQuestions = [
-  "今天是否留下了一条别人可以验证的工程证据？",
-  "我是在推进主线能力，还是只是在收藏课程？",
-  "如果面试官追问今天的学习，我能讲清输入、输出和结果吗？",
+const assistantProjectSteps = [
+  "用公开资料或自建样例，回答一类明确的问题。",
+  "给每个答案保留来源、评测问题和失败样本。",
+  "把服务部署起来，观察健康状态、延迟和错误。",
+  "演练一次失败恢复，并把过程写进 README。",
 ];
 
 function toDateKey(date: Date) {
@@ -40,16 +77,99 @@ function toDateKey(date: Date) {
   return `${year}-${month}-${day}`;
 }
 
+function dateLabel(dateKey: string) {
+  const date = new Date(`${dateKey}T12:00:00`);
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "long",
+    day: "numeric",
+    weekday: "long",
+  }).format(date);
+}
+
+function weekStartKey(dateKey: string) {
+  const date = new Date(`${dateKey}T12:00:00`);
+  date.setDate(date.getDate() - 6);
+  return toDateKey(date);
+}
+
 function blankForm(): DayForm {
   return {
     top_goal: "",
-    java_ai_minutes: 0,
-    platform_minutes: 0,
-    foundation_minutes: 0,
+    events: [],
     evidence: "",
     blocker: "",
     reflection: "",
     completed: false,
+  };
+}
+
+function isLearningCategory(value: unknown): value is LearningCategory {
+  return value === "java_ai" || value === "platform" || value === "foundation";
+}
+
+function normalizeEvents(value: unknown): LearningEvent[] {
+  if (!Array.isArray(value)) return [];
+
+  return value.flatMap((item, index) => {
+    if (!item || typeof item !== "object") return [];
+    const event = item as Record<string, unknown>;
+    const title = typeof event.title === "string" ? event.title.trim() : "";
+    const minutes = typeof event.minutes === "number" ? Math.round(event.minutes) : 0;
+    if (!title || !isLearningCategory(event.category) || minutes < 1) return [];
+
+    return [{
+      id: typeof event.id === "string" && event.id ? event.id : `restored-${index}`,
+      title,
+      category: event.category,
+      minutes,
+    }];
+  });
+}
+
+function legacyEventsFromMinutes(minutes: Record<LearningCategory, number>): LearningEvent[] {
+  return (Object.keys(categoryMeta) as LearningCategory[]).flatMap((category) => {
+    if (minutes[category] < 1) return [];
+    return [{
+      id: `legacy-${category}`,
+      title: `${categoryMeta[category].label}（旧版累计）`,
+      category,
+      minutes: minutes[category],
+    }];
+  });
+}
+
+function legacyEvents(record: Pick<StoredDay, "java_ai_minutes" | "platform_minutes" | "foundation_minutes">): LearningEvent[] {
+  return legacyEventsFromMinutes({
+    java_ai: record.java_ai_minutes ?? 0,
+    platform: record.platform_minutes ?? 0,
+    foundation: record.foundation_minutes ?? 0,
+  });
+}
+
+function eventsForRecord(record: StoredDay): LearningEvent[] {
+  const events = normalizeEvents(record.events);
+  return events.length ? events : legacyEvents(record);
+}
+
+function eventMinutes(events: LearningEvent[]) {
+  return events.reduce<Record<LearningCategory, number>>(
+    (total, event) => ({ ...total, [event.category]: total[event.category] + event.minutes }),
+    { java_ai: 0, platform: 0, foundation: 0 },
+  );
+}
+
+function totalMinutes(events: LearningEvent[]) {
+  return events.reduce((total, event) => total + event.minutes, 0);
+}
+
+function formFromRecord(record: StoredDay): DayForm {
+  return {
+    top_goal: record.top_goal ?? "",
+    events: eventsForRecord(record),
+    evidence: record.evidence ?? "",
+    blocker: record.blocker ?? "",
+    reflection: record.reflection ?? "",
+    completed: record.completed ?? false,
   };
 }
 
@@ -58,6 +178,20 @@ function draftKey(userId: string | undefined, dateKey: string) {
 }
 
 function isDayForm(value: unknown): value is DayForm {
+  if (!value || typeof value !== "object") return false;
+
+  const form = value as Record<string, unknown>;
+  return (
+    typeof form.top_goal === "string" &&
+    Array.isArray(form.events) && form.events.length === normalizeEvents(form.events).length &&
+    typeof form.evidence === "string" &&
+    typeof form.blocker === "string" &&
+    typeof form.reflection === "string" &&
+    typeof form.completed === "boolean"
+  );
+}
+
+function isLegacyDayForm(value: unknown): value is Omit<DayForm, "events"> & Record<"java_ai_minutes" | "platform_minutes" | "foundation_minutes", number> {
   if (!value || typeof value !== "object") return false;
 
   const form = value as Record<string, unknown>;
@@ -79,7 +213,22 @@ function readDraft(key: string): DayForm | null {
     if (!value) return null;
 
     const draft: unknown = JSON.parse(value);
-    return isDayForm(draft) ? draft : null;
+    if (isDayForm(draft)) return { ...draft, events: normalizeEvents(draft.events) };
+    if (isLegacyDayForm(draft)) {
+      return {
+        top_goal: draft.top_goal,
+        events: legacyEventsFromMinutes({
+          java_ai: draft.java_ai_minutes,
+          platform: draft.platform_minutes,
+          foundation: draft.foundation_minutes,
+        }),
+        evidence: draft.evidence,
+        blocker: draft.blocker,
+        reflection: draft.reflection,
+        completed: draft.completed,
+      };
+    }
+    return null;
   } catch {
     return null;
   }
@@ -104,9 +253,7 @@ function clearDraft(key: string) {
 function sameForm(left: DayForm, right: DayForm) {
   return (
     left.top_goal === right.top_goal &&
-    left.java_ai_minutes === right.java_ai_minutes &&
-    left.platform_minutes === right.platform_minutes &&
-    left.foundation_minutes === right.foundation_minutes &&
+    JSON.stringify(left.events) === JSON.stringify(right.events) &&
     left.evidence === right.evidence &&
     left.blocker === right.blocker &&
     left.reflection === right.reflection &&
@@ -114,19 +261,23 @@ function sameForm(left: DayForm, right: DayForm) {
   );
 }
 
-function dateLabel(dateKey: string) {
-  const date = new Date(`${dateKey}T12:00:00`);
-  return new Intl.DateTimeFormat("zh-CN", {
-    month: "long",
-    day: "numeric",
-    weekday: "long",
-  }).format(date);
+function formatMinutes(minutes: number) {
+  if (minutes < 60) return `${minutes} 分钟`;
+  const hours = Math.floor(minutes / 60);
+  const remainder = minutes % 60;
+  return remainder ? `${hours} 小时 ${remainder} 分` : `${hours} 小时`;
 }
 
-function weekStartKey(dateKey: string) {
-  const date = new Date(`${dateKey}T12:00:00`);
-  date.setDate(date.getDate() - 6);
-  return toDateKey(date);
+function formatTimer(milliseconds: number) {
+  const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
+  const hours = String(Math.floor(totalSeconds / 3600)).padStart(2, "0");
+  const minutes = String(Math.floor((totalSeconds % 3600) / 60)).padStart(2, "0");
+  const seconds = String(totalSeconds % 60).padStart(2, "0");
+  return `${hours}:${minutes}:${seconds}`;
+}
+
+function createEventId() {
+  return globalThis.crypto?.randomUUID?.() ?? `event-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
 export function LearningDashboard() {
@@ -135,29 +286,34 @@ export function LearningDashboard() {
   const [session, setSession] = useState<Session | null>(null);
   const [authorized, setAuthorized] = useState(false);
   const [weeklyRecords, setWeeklyRecords] = useState<StoredDay[]>([]);
-  const [tasks, setTasks] = useState<boolean[]>([false, false, false]);
+  const [historyRecords, setHistoryRecords] = useState<StoredDay[]>([]);
+  const [historyHasMore, setHistoryHasMore] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
+  const [eventTitle, setEventTitle] = useState("");
+  const [eventCategory, setEventCategory] = useState<LearningCategory>("java_ai");
+  const [timerStartedAt, setTimerStartedAt] = useState<number | null>(null);
+  const [timerNow, setTimerNow] = useState(0);
 
   const configured = isSupabaseConfigured;
   const currentDraftKey = useMemo(
     () => draftKey(session?.user.id, selectedDate),
     [selectedDate, session?.user.id],
   );
-  const totalMinutes = form.java_ai_minutes + form.platform_minutes + form.foundation_minutes;
-  const weekMinutes = weeklyRecords.reduce(
-    (sum, record) => sum + record.java_ai_minutes + record.platform_minutes + record.foundation_minutes,
-    0,
-  );
+  const todayMinutes = useMemo(() => eventMinutes(form.events), [form.events]);
+  const todayTotal = totalMinutes(form.events);
+  const weekMinutes = weeklyRecords.reduce((sum, record) => sum + totalMinutes(eventsForRecord(record)), 0);
   const completedDays = weeklyRecords.filter((record) => record.completed).length;
-  const goalProgress = Math.min(100, Math.round((totalMinutes / 90) * 100));
+  const timerElapsed = timerStartedAt ? timerNow - timerStartedAt : 0;
   const displayName = session?.user.user_metadata.user_name || session?.user.email?.split("@")[0] || "GitHub 用户";
 
-  const question = useMemo(() => {
-    const index = Number(selectedDate.replaceAll("-", "")) % selfQuestions.length;
-    return selfQuestions[index];
-  }, [selectedDate]);
+  useEffect(() => {
+    if (!timerStartedAt) return;
+    const timer = window.setInterval(() => setTimerNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [timerStartedAt]);
 
   useEffect(() => {
     if (!configured) return;
@@ -181,6 +337,8 @@ export function LearningDashboard() {
       const initialDraft = readDraft(currentDraftKey);
       setForm(initialDraft ?? blankForm());
       setWeeklyRecords([]);
+      setHistoryRecords([]);
+      setHistoryHasMore(false);
       setAuthorized(false);
 
       if (!configured || !session) return;
@@ -188,6 +346,7 @@ export function LearningDashboard() {
       if (!client) return;
 
       setLoading(true);
+      setHistoryLoading(true);
       const { data: access, error: accessError } = await client
         .from("allowed_users")
         .select("user_id")
@@ -199,49 +358,33 @@ export function LearningDashboard() {
       if (accessError || !access) {
         setMessage("此 GitHub 账号尚未获授权。请按 README 将你的 Supabase 用户 ID 写入允许名单。");
         setLoading(false);
+        setHistoryLoading(false);
         return;
       }
 
       setAuthorized(true);
       const startKey = weekStartKey(selectedDate);
-
-      const [{ data: today, error: todayError }, { data: week, error: weekError }] = await Promise.all([
-        client
-          .from("learning_days")
-          .select("*")
-          .eq("record_date", selectedDate)
-          .maybeSingle(),
-        client
-          .from("learning_days")
-          .select("*")
-          .gte("record_date", startKey)
-          .lte("record_date", selectedDate)
-          .order("record_date", { ascending: true }),
+      const [{ data: today, error: todayError }, { data: week, error: weekError }, { data: history, error: historyError }] = await Promise.all([
+        client.from("learning_days").select("*").eq("record_date", selectedDate).maybeSingle(),
+        client.from("learning_days").select("*").gte("record_date", startKey).lte("record_date", selectedDate).order("record_date", { ascending: true }),
+        client.from("learning_days").select("*").order("record_date", { ascending: false }).range(0, historyPageSize - 1),
       ]);
 
       if (cancelled) return;
 
-      if (todayError || weekError) {
+      if (todayError || weekError || historyError) {
         setMessage("读取同步记录失败。请检查 Supabase 表结构、RLS 策略和网络连接。");
       } else {
         const latestDraft = readDraft(currentDraftKey);
-        if (latestDraft) {
-          setForm(latestDraft);
-        } else if (today) {
-          setForm({
-            top_goal: today.top_goal ?? "",
-            java_ai_minutes: today.java_ai_minutes ?? 0,
-            platform_minutes: today.platform_minutes ?? 0,
-            foundation_minutes: today.foundation_minutes ?? 0,
-            evidence: today.evidence ?? "",
-            blocker: today.blocker ?? "",
-            reflection: today.reflection ?? "",
-            completed: today.completed ?? false,
-          });
-        }
+        if (latestDraft) setForm(latestDraft);
+        else if (today) setForm(formFromRecord(today as StoredDay));
         setWeeklyRecords((week as StoredDay[] | null) ?? []);
+        const records = (history as StoredDay[] | null) ?? [];
+        setHistoryRecords(records);
+        setHistoryHasMore(records.length === historyPageSize);
       }
       setLoading(false);
+      setHistoryLoading(false);
     }
 
     load();
@@ -258,9 +401,31 @@ export function LearningDashboard() {
     });
   }
 
-  function updateNumber(field: "java_ai_minutes" | "platform_minutes" | "foundation_minutes", value: string) {
-    const parsed = Math.max(0, Number(value) || 0);
-    updateForm((current) => ({ ...current, [field]: parsed }));
+  function startTimer() {
+    if (!eventTitle.trim()) {
+      setMessage("先写下这段时间要完成的具体事件，再开始计时。");
+      return;
+    }
+    setMessage("");
+    setTimerNow(Date.now());
+    setTimerStartedAt(Date.now());
+  }
+
+  function finishTimer() {
+    if (!timerStartedAt) return;
+    const minutes = Math.max(1, Math.round((Date.now() - timerStartedAt) / 60000));
+    const title = eventTitle.trim();
+    updateForm((current) => ({
+      ...current,
+      events: [...current.events, { id: createEventId(), title, category: eventCategory, minutes }],
+    }));
+    setTimerStartedAt(null);
+    setEventTitle("");
+    setMessage(`已记录「${title}」：${formatMinutes(minutes)}。`);
+  }
+
+  function removeEvent(id: string) {
+    updateForm((current) => ({ ...current, events: current.events.filter((event) => event.id !== id) }));
   }
 
   async function signIn() {
@@ -280,6 +445,7 @@ export function LearningDashboard() {
     clearDraft(currentDraftKey);
     setForm(blankForm());
     setWeeklyRecords([]);
+    setHistoryRecords([]);
   }
 
   async function saveDay() {
@@ -301,9 +467,14 @@ export function LearningDashboard() {
     setSaving(true);
     const savedForm = form;
     const savedDraftKey = currentDraftKey;
+    const minutes = eventMinutes(savedForm.events);
     const { error } = await client.from("learning_days").upsert(
       {
         ...savedForm,
+        events: savedForm.events,
+        java_ai_minutes: minutes.java_ai,
+        platform_minutes: minutes.platform,
+        foundation_minutes: minutes.foundation,
         user_id: session.user.id,
         record_date: selectedDate,
       },
@@ -313,18 +484,41 @@ export function LearningDashboard() {
     if (error) {
       setMessage(`保存失败：${error.message}`);
     } else {
-      setMessage("已同步。现在的学习记录已经是一条可复盘的职业证据。");
       const latestDraft = readDraft(savedDraftKey);
       if (latestDraft && sameForm(latestDraft, savedForm)) clearDraft(savedDraftKey);
-      const refreshed = await client
-        .from("learning_days")
-        .select("*")
-        .gte("record_date", weekStartKey(selectedDate))
-        .lte("record_date", selectedDate)
-        .order("record_date", { ascending: true });
-      if (!refreshed.error) setWeeklyRecords((refreshed.data as StoredDay[] | null) ?? []);
+      setMessage("已同步：今天的事件、证据和复盘都会进入历史档案。");
+      const [{ data: week }, { data: history }] = await Promise.all([
+        client.from("learning_days").select("*").gte("record_date", weekStartKey(selectedDate)).lte("record_date", selectedDate).order("record_date", { ascending: true }),
+        client.from("learning_days").select("*").order("record_date", { ascending: false }).range(0, historyPageSize - 1),
+      ]);
+      setWeeklyRecords((week as StoredDay[] | null) ?? []);
+      const records = (history as StoredDay[] | null) ?? [];
+      setHistoryRecords(records);
+      setHistoryHasMore(records.length === historyPageSize);
     }
     setSaving(false);
+  }
+
+  async function loadMoreHistory() {
+    const client = getSupabase();
+    if (!client || !session || !authorized || historyLoading || !historyHasMore) return;
+
+    setHistoryLoading(true);
+    const start = historyRecords.length;
+    const { data, error } = await client
+      .from("learning_days")
+      .select("*")
+      .order("record_date", { ascending: false })
+      .range(start, start + historyPageSize - 1);
+
+    if (error) {
+      setMessage("加载更早的历史记录失败，请稍后重试。");
+    } else {
+      const records = (data as StoredDay[] | null) ?? [];
+      setHistoryRecords((current) => [...current, ...records.filter((record) => !current.some((item) => item.id === record.id))]);
+      setHistoryHasMore(records.length === historyPageSize);
+    }
+    setHistoryLoading(false);
   }
 
   return (
@@ -334,22 +528,20 @@ export function LearningDashboard() {
           <div className="brand-mark">LO</div>
           <div>
             <div className="brand-name">LEARNING OS</div>
-            <div className="brand-subtitle">每天把时间变成证据，而不是只留下焦虑。</div>
+            <div className="brand-subtitle">职业主线 · 事件记录 · 长期证据</div>
           </div>
         </div>
         <div className="account-area">
           <div className="sync-pill">
             <span className={`sync-dot ${configured && session && authorized ? "ok" : ""}`} />
-            {!configured ? "同步未配置" : !session ? "等待 GitHub 登录" : authorized ? "云端已连接" : "等待授权"}
+            {!configured ? "本地预览" : !session ? "等待登录" : authorized ? "已连接云端" : "等待授权"}
           </div>
           {!configured ? (
             <button className="button button-secondary" type="button" onClick={() => setMessage("请先按 README 创建 Supabase 项目并填写 .env.local。")}>
               配置同步
             </button>
           ) : session ? (
-            <button className="button button-secondary" type="button" onClick={signOut}>
-              {displayName} · 退出
-            </button>
+            <button className="button button-secondary" type="button" onClick={signOut}>{displayName} · 退出</button>
           ) : (
             <button className="button" type="button" onClick={signIn}>使用 GitHub 登录</button>
           )}
@@ -358,140 +550,157 @@ export function LearningDashboard() {
 
       {!configured && (
         <section className="notice">
-          <div><strong>预览模式：</strong>页面已经可用，但不会把记录伪装成已同步。复制 <code>.env.example</code> 为 <code>.env.local</code>，填入自己的 Supabase 项目信息后，才会启用 GitHub 登录和双设备同步。</div>
+          <strong>预览模式：</strong>可以体验记录流程；配置 Supabase 后，事件和历史档案会在你的设备之间同步。
         </section>
       )}
 
-      <section className="hero">
-        <div className="hero-copy">
-          <div className="eyebrow">今天的最小闭环</div>
-          <h1>不追求完美日程，追求可证明的积累。</h1>
-          <p>把 Java / AI 应用、云原生平台能力和面试基本功放在同一个节奏里。每次记录都要回答：我做了什么？留下什么证据？下一步是什么？</p>
-        </div>
-        <div className="date-switcher">
-          <div>
-            <label htmlFor="record-date">记录日期</label>
-            <input id="record-date" type="date" value={selectedDate} onChange={(event) => setSelectedDate(event.target.value)} />
+      <section className="north-star">
+        <div className="north-star-copy">
+          <div className="eyebrow">职业主线</div>
+          <h1>成为能交付生产级 AI 应用与云原生平台的工程师。</h1>
+          <p>不是在“运维或开发”之间二选一，而是把 Java / AI 应用、生产交付和可靠性沉淀成下一跳能识别的工程能力。</p>
+          <div className="goal-tags">
+            <span>Java / AI 应用</span><span>云原生交付</span><span>可观测性与可靠性</span>
           </div>
-          <div className="date-weekday">{dateLabel(selectedDate)}</div>
+        </div>
+        <div className="current-focus">
+          <span className="focus-label">当前阶段</span>
+          <strong>0–6 个月：让工作产生工程信号</strong>
+          <p>优先把自动化、监控、变更和复盘做成可展示成果，而不是只记录花了多少时间。</p>
+          <div className="date-picker">
+            <label htmlFor="record-date">正在记录</label>
+            <input id="record-date" type="date" value={selectedDate} disabled={Boolean(timerStartedAt)} onChange={(event) => setSelectedDate(event.target.value)} />
+            <span>{dateLabel(selectedDate)}</span>
+          </div>
         </div>
       </section>
 
-      <section className="stat-row" aria-label="本周概览">
-        <article className="stat-card">
-          <div className="stat-label">今日深度学习</div>
-          <div className="stat-value">{totalMinutes}<small>分钟</small></div>
-          <div className="stat-help">今日 90 分钟目标 · {goalProgress}%</div>
-        </article>
-        <article className="stat-card">
-          <div className="stat-label">近 7 天累计</div>
-          <div className="stat-value">{weekMinutes}<small>分钟</small></div>
-          <div className="stat-help">只统计已经同步的正式记录</div>
-        </article>
-        <article className="stat-card">
-          <div className="stat-label">完成日</div>
-          <div className="stat-value">{completedDays}<small>/ 7 天</small></div>
-          <div className="stat-help">完成不等于满分，代表留下了闭环</div>
-        </article>
+      <section className="stage-grid" aria-label="职业阶段路线图">
+        {careerStages.map((stage, index) => (
+          <article className={`stage-card ${index === 0 ? "active" : ""}`} key={stage.range}>
+            <span>{stage.range}</span>
+            <h2>{stage.title}</h2>
+            <p>{stage.outcome}</p>
+          </article>
+        ))}
       </section>
 
-      <section className="dashboard-grid">
-        <div>
-          <section className="card">
-            <div className="card-head">
-              <div>
-                <h2 className="card-title">今日学习记录</h2>
-                <p className="card-caption">以最小可行动作开始；有成果后再补充证据和复盘。</p>
+      <section className="main-grid">
+        <section className="card focus-card">
+          <div className="card-head">
+            <div>
+              <div className="eyebrow">今日行动</div>
+              <h2 className="card-title">先记录事件，时间由计时器生成。</h2>
+              <p className="card-caption">每条记录都要能回答：我做了什么、属于哪条能力主线、花了多久。</p>
+            </div>
+            {loading && <span className="sync-pill">正在读取…</span>}
+          </div>
+
+          <div className="timer-builder">
+            <label>
+              <span>我要做什么？</span>
+              <input value={eventTitle} disabled={Boolean(timerStartedAt)} placeholder="例如：为巡检脚本补一组异常样例" onChange={(event) => setEventTitle(event.target.value)} />
+            </label>
+            <label>
+              <span>能力主线</span>
+              <select value={eventCategory} disabled={Boolean(timerStartedAt)} onChange={(event) => setEventCategory(event.target.value as LearningCategory)}>
+                {(Object.keys(categoryMeta) as LearningCategory[]).map((category) => <option value={category} key={category}>{categoryMeta[category].label}</option>)}
+              </select>
+            </label>
+            {timerStartedAt ? (
+              <div className="timer-running">
+                <span>{formatTimer(timerElapsed)}</span>
+                <button className="button" type="button" onClick={finishTimer}>结束并写入</button>
               </div>
-              {loading && <span className="sync-pill">正在读取…</span>}
+            ) : (
+              <button className="button timer-start" type="button" onClick={startTimer}>开始计时</button>
+            )}
+          </div>
+
+          <div className="today-summary">
+            <div><span>今日已沉淀</span><strong>{formatMinutes(todayTotal)}</strong></div>
+            <p>{form.events.length ? `共 ${form.events.length} 条可复盘事件` : "完成一次具体行动后，记录会出现在这里。"}</p>
+          </div>
+
+          <div className="event-list" aria-live="polite">
+            {form.events.length ? form.events.map((event) => (
+              <article className="event-row" key={event.id}>
+                <span className={`event-dot ${event.category}`} />
+                <div><strong>{event.title}</strong><span>{categoryMeta[event.category].label}</span></div>
+                <time>{formatMinutes(event.minutes)}</time>
+                <button className="button-quiet" type="button" onClick={() => removeEvent(event.id)} aria-label={`删除事件：${event.title}`}>删除</button>
+              </article>
+            )) : <p className="empty-state">还没有事件。选择一件 20 分钟内可完成的小事，点击“开始计时”。</p>}
+          </div>
+
+          <label className="goal-field">
+            <span>今天最重要的一件事</span>
+            <input value={form.top_goal} placeholder="例如：完成巡检汇总脚本的第一个可运行版本" onChange={(event) => updateForm((current) => ({ ...current, top_goal: event.target.value }))} />
+          </label>
+
+          <details className="notes-panel">
+            <summary>补充证据、卡点与明日第一步（可选）</summary>
+            <div className="notes-grid">
+              <label><span>留下的证据</span><textarea value={form.evidence} placeholder="提交、脚本输出、实验结果或脱敏的问题记录。" onChange={(event) => updateForm((current) => ({ ...current, evidence: event.target.value }))} /></label>
+              <label><span>卡点 / 待解决问题</span><textarea value={form.blocker} placeholder="写具体症状，例如：异常输入没有被正确记录。" onChange={(event) => updateForm((current) => ({ ...current, blocker: event.target.value }))} /></label>
+              <label><span>复盘与明日第一步</span><textarea value={form.reflection} placeholder="例如：明天先补 3 组异常样例，再检查日志。" onChange={(event) => updateForm((current) => ({ ...current, reflection: event.target.value }))} /></label>
             </div>
-            <div className="field-grid">
-              <label className="field field-full">
-                <span>今天最重要的一件事</span>
-                <input value={form.top_goal} placeholder="例如：完成 Python 巡检汇总脚本的第一个可运行版本" onChange={(event) => updateForm((current) => ({ ...current, top_goal: event.target.value }))} />
-              </label>
-              <label className="field">
-                <span>Java / AI 应用（分钟）</span>
-                <input type="number" min="0" value={form.java_ai_minutes || ""} placeholder="0" onChange={(event) => updateNumber("java_ai_minutes", event.target.value)} />
-              </label>
-              <label className="field">
-                <span>云原生 / 平台（分钟）</span>
-                <input type="number" min="0" value={form.platform_minutes || ""} placeholder="0" onChange={(event) => updateNumber("platform_minutes", event.target.value)} />
-              </label>
-              <label className="field">
-                <span>算法 / 英语（分钟）</span>
-                <input type="number" min="0" value={form.foundation_minutes || ""} placeholder="0" onChange={(event) => updateNumber("foundation_minutes", event.target.value)} />
-              </label>
-              <label className="field field-full">
-                <span>今天留下的证据</span>
-                <textarea value={form.evidence} placeholder="链接、提交、脚本输出、实验结果，或一条脱敏的问题记录。" onChange={(event) => updateForm((current) => ({ ...current, evidence: event.target.value }))} />
-              </label>
-              <label className="field">
-                <span>卡点 / 待解决问题</span>
-                <textarea value={form.blocker} placeholder="写下具体症状，而非“今天状态不好”。" onChange={(event) => updateForm((current) => ({ ...current, blocker: event.target.value }))} />
-              </label>
-              <label className="field field-full">
-                <span>复盘与明日第一步</span>
-                <textarea value={form.reflection} placeholder="例如：脚本输入边界还没想清楚；明天先补 3 组异常样例和日志。" onChange={(event) => updateForm((current) => ({ ...current, reflection: event.target.value }))} />
-              </label>
-            </div>
-            <div className="form-footer">
-              <label className="checkbox"><input type="checkbox" checked={form.completed} onChange={(event) => updateForm((current) => ({ ...current, completed: event.target.checked }))} /> 今天已形成最小闭环</label>
-              <div className="save-hint">{configured && session && authorized ? "保存后两台电脑会读取同一份记录。" : "完成 Supabase 配置和账号授权后才能写入云端。"}</div>
-              <button className="button" type="button" disabled={saving} onClick={saveDay}>{saving ? "正在同步…" : "保存今日记录"}</button>
-            </div>
-            {message && <p className="feedback" role="status">{message}</p>}
+          </details>
+
+          <div className="save-bar">
+            <label className="checkbox"><input type="checkbox" checked={form.completed} onChange={(event) => updateForm((current) => ({ ...current, completed: event.target.checked }))} /> 今天形成了最小闭环</label>
+            <button className="button" type="button" disabled={saving} onClick={saveDay}>{saving ? "正在同步…" : "保存今日记录"}</button>
+          </div>
+          {message && <p className="feedback" role="status">{message}</p>}
+        </section>
+
+        <aside className="side-stack">
+          <section className="card project-card">
+            <div className="eyebrow">作品集主项目 · 讲人话版</div>
+            <h2 className="card-title">“AI 知识助手”到底是什么？</h2>
+            <p>它不是泛泛的聊天机器人。它是一个用公开资料或自建样例回答具体问题的服务，并且你能证明它<strong>答得如何、运行是否健康、出错后怎样恢复</strong>。</p>
+            <ol>
+              {assistantProjectSteps.map((step) => <li key={step}>{step}</li>)}
+            </ol>
+            <div className="project-first-step"><strong>你现在只需要做第一步：</strong>创建仓库，写清它要回答的一个问题，再做出第一个可运行接口。</div>
           </section>
 
-          <section className="card">
-            <div className="card-head">
-              <div>
-                <h2 className="card-title">本周能力配比</h2>
-                <p className="card-caption">建议的长期配比：Java / AI 应用 45%，平台能力 35%，算法与英语 20%。</p>
-              </div>
-            </div>
+          <section className="card allocation-card">
+            <div className="card-head"><div><div className="eyebrow">本周投入</div><h2 className="card-title">能力配比不是三张填空题。</h2></div></div>
             <div className="allocation">
-              <div className="allocation-item"><span>Java / AI 应用</span><div className="allocation-track"><div className="allocation-bar" style={{ width: `${Math.min(100, form.java_ai_minutes / 0.9)}%` }} /></div><span className="allocation-value">{form.java_ai_minutes}m</span></div>
-              <div className="allocation-item"><span>平台 / 云原生</span><div className="allocation-track"><div className="allocation-bar platform" style={{ width: `${Math.min(100, form.platform_minutes / 0.9)}%` }} /></div><span className="allocation-value">{form.platform_minutes}m</span></div>
-              <div className="allocation-item"><span>算法 / 英语</span><div className="allocation-track"><div className="allocation-bar foundation" style={{ width: `${Math.min(100, form.foundation_minutes / 0.9)}%` }} /></div><span className="allocation-value">{form.foundation_minutes}m</span></div>
+              {(Object.keys(categoryMeta) as LearningCategory[]).map((category) => {
+                const minutes = todayMinutes[category];
+                return <div className="allocation-item" key={category}>
+                  <div><strong>{categoryMeta[category].label}</strong><span>建议 {categoryMeta[category].target}% · {categoryMeta[category].description}</span></div>
+                  <div className="allocation-track"><div className={`allocation-bar ${category}`} style={{ width: `${Math.min(100, minutes / 0.9)}%` }} /></div>
+                  <b>{minutes}m</b>
+                </div>;
+              })}
             </div>
-            <p className="allocation-note">今天时间不足也没关系：保住“至少一条工程记录或一次代码提交”比补齐所有类别更重要。</p>
-          </section>
-        </div>
-
-        <aside>
-          <section className="card">
-            <div className="card-head">
-              <div><h2 className="card-title">今天的三件小事</h2><p className="card-caption">完成它们，就已经避免“只学习、不沉淀”。</p></div>
-            </div>
-            <div className="checklist">
-              {defaultTasks.map((task, index) => (
-                <label className={`task ${tasks[index] ? "done" : ""}`} key={task}>
-                  <input type="checkbox" checked={tasks[index]} onChange={() => setTasks((current) => current.map((item, itemIndex) => itemIndex === index ? !item : item))} />
-                  {task}
-                </label>
-              ))}
-            </div>
-          </section>
-
-          <section className="card">
-            <div className="card-head"><div><h2 className="card-title">职业主线</h2><p className="card-caption">主线是 Java / AI 应用，生产交付能力是护城河。</p></div></div>
-            <div className="path">
-              <div className="path-step active"><div className="path-stage">现在 · 0–6 个月</div><div className="path-name">把运维工作工程化</div><div className="path-detail">自动化、监控、变更、复盘，形成可写简历的真实证据。</div></div>
-              <div className="path-step"><div className="path-stage">6–12 个月</div><div className="path-name">做出生产级个人项目</div><div className="path-detail">AI 知识助手 + 云原生部署 + 可观测性 + 故障演练。</div></div>
-              <div className="path-step"><div className="path-stage">12–24 个月</div><div className="path-name">跳向更高职责密度</div><div className="path-detail">云原生 Java、AI 应用平台、DevOps / SRE 或中间件方向。</div></div>
-            </div>
-          </section>
-
-          <section className="card grill">
-            <div className="card-head"><div><div className="eyebrow">GRILL ME</div><h2 className="card-title">今晚的自我拷问</h2></div></div>
-            <p className="grill-question">{question}</p>
-            <p className="grill-note">推荐答案不是“我很忙”，而是一条可展示的记录、提交、实验或清晰的下一步。真正卡住时，把问题带给我，我会逐项追问到能行动为止。</p>
+            <div className="week-total"><span>近 7 天正式记录</span><strong>{formatMinutes(weekMinutes)}</strong><span>{completedDays} 个闭环日</span></div>
           </section>
         </aside>
       </section>
 
-      <p className="footer-note">隐私边界：不要记录公司账号、密码、IP、网络拓扑、客户信息、内部日志或未脱敏配置。学习看板应该沉淀你的能力，不应该带走公司的数据。</p>
+      <section className="card archive-card">
+        <div className="card-head">
+          <div><div className="eyebrow">历史档案</div><h2 className="card-title">不止最近 7 天：每次保存都是以后能翻出来的证据。</h2><p className="card-caption">按日期倒序加载。旧版只有时长的数据会以“旧版累计”保留，不会丢失。</p></div>
+          <span className="archive-count">已显示 {historyRecords.length} 天</span>
+        </div>
+        <div className="history-list">
+          {historyRecords.length ? historyRecords.map((record) => {
+            const events = eventsForRecord(record);
+            return <article className="history-row" key={record.id}>
+              <button className="history-date" type="button" onClick={() => setSelectedDate(record.record_date)}><strong>{dateLabel(record.record_date)}</strong><span>{record.record_date}</span></button>
+              <div className="history-main"><strong>{record.top_goal || "未填写主目标"}</strong><div className="history-events">{events.length ? events.map((event) => <span key={event.id}>{event.title} · {event.minutes}m</span>) : <span>未记录具体事件</span>}</div></div>
+              <div className="history-total"><strong>{formatMinutes(totalMinutes(events))}</strong><span>{record.completed ? "已闭环" : "进行中"}</span></div>
+            </article>;
+          }) : <p className="empty-state">{configured && session ? "还没有已同步的历史记录。保存今天的事件后，它会出现在这里。" : "登录并保存记录后，可以在这里查看全部历史。"}</p>}
+        </div>
+        {historyHasMore && <button className="button button-secondary load-more" type="button" disabled={historyLoading} onClick={loadMoreHistory}>{historyLoading ? "正在加载…" : "加载更早的记录"}</button>}
+      </section>
+
+      <p className="footer-note">隐私边界：只记录公开或脱敏的信息。不要输入公司账号、密码、IP、网络拓扑、客户资料、内部日志或未脱敏配置。</p>
     </main>
   );
 }

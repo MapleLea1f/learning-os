@@ -23,18 +23,18 @@ export async function generateMetadata(): Promise<Metadata> {
 
   return {
     metadataBase,
-    title: "Learning OS｜学习看板",
-    description: "记录学习、沉淀证据、持续复盘。",
+    title: "Learning OS｜职业学习看板",
+    description: "用具体行动、工程证据和长期复盘，走向 AI 应用平台工程。",
     openGraph: {
-      title: "Learning OS｜学习看板",
-      description: "每天把时间变成证据。",
-      images: ["/og.png"],
+      title: "Learning OS｜职业学习看板",
+      description: "把经验变成工程证据。",
+      images: ["/og-career-path.png"],
     },
     twitter: {
       card: "summary_large_image",
-      title: "Learning OS｜学习看板",
-      description: "每天把时间变成证据。",
-      images: ["/og.png"],
+      title: "Learning OS｜职业学习看板",
+      description: "把经验变成工程证据。",
+      images: ["/og-career-path.png"],
     },
     icons: {
       icon: "/favicon.svg",
