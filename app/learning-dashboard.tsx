@@ -295,6 +295,7 @@ export function LearningDashboard() {
   const [eventTitle, setEventTitle] = useState("");
   const [eventCategory, setEventCategory] = useState<LearningCategory>("java_ai");
   const [timerStartedAt, setTimerStartedAt] = useState<number | null>(null);
+  const [timerElapsedBeforePause, setTimerElapsedBeforePause] = useState(0);
   const [timerNow, setTimerNow] = useState(0);
 
   const configured = isSupabaseConfigured;
@@ -306,7 +307,8 @@ export function LearningDashboard() {
   const todayTotal = totalMinutes(form.events);
   const weekMinutes = weeklyRecords.reduce((sum, record) => sum + totalMinutes(eventsForRecord(record)), 0);
   const completedDays = weeklyRecords.filter((record) => record.completed).length;
-  const timerElapsed = timerStartedAt ? timerNow - timerStartedAt : 0;
+  const timerInProgress = timerStartedAt !== null || timerElapsedBeforePause > 0;
+  const timerElapsed = timerElapsedBeforePause + (timerStartedAt ? timerNow - timerStartedAt : 0);
   const displayName = session?.user.user_metadata.user_name || session?.user.email?.split("@")[0] || "GitHub 用户";
 
   useEffect(() => {
@@ -406,20 +408,41 @@ export function LearningDashboard() {
       setMessage("先写下这段时间要完成的具体事件，再开始计时。");
       return;
     }
+    const startedAt = Date.now();
     setMessage("");
-    setTimerNow(Date.now());
-    setTimerStartedAt(Date.now());
+    setTimerElapsedBeforePause(0);
+    setTimerNow(startedAt);
+    setTimerStartedAt(startedAt);
+  }
+
+  function pauseTimer() {
+    if (!timerStartedAt) return;
+    const pausedAt = Date.now();
+    setTimerElapsedBeforePause((elapsed) => elapsed + pausedAt - timerStartedAt);
+    setTimerNow(pausedAt);
+    setTimerStartedAt(null);
+    setMessage("计时已暂停，点击“继续计时”后会从当前累计时长继续。");
+  }
+
+  function resumeTimer() {
+    if (!timerInProgress || timerStartedAt) return;
+    const resumedAt = Date.now();
+    setMessage("");
+    setTimerNow(resumedAt);
+    setTimerStartedAt(resumedAt);
   }
 
   function finishTimer() {
-    if (!timerStartedAt) return;
-    const minutes = Math.max(1, Math.round((Date.now() - timerStartedAt) / 60000));
+    if (!timerInProgress) return;
+    const elapsed = timerElapsedBeforePause + (timerStartedAt ? Date.now() - timerStartedAt : 0);
+    const minutes = Math.max(1, Math.round(elapsed / 60000));
     const title = eventTitle.trim();
     updateForm((current) => ({
       ...current,
       events: [...current.events, { id: createEventId(), title, category: eventCategory, minutes }],
     }));
     setTimerStartedAt(null);
+    setTimerElapsedBeforePause(0);
     setEventTitle("");
     setMessage(`已记录「${title}」：${formatMinutes(minutes)}。`);
   }
@@ -569,7 +592,7 @@ export function LearningDashboard() {
           <p>优先把自动化、监控、变更和复盘做成可展示成果，而不是只记录花了多少时间。</p>
           <div className="date-picker">
             <label htmlFor="record-date">正在记录</label>
-            <input id="record-date" type="date" value={selectedDate} disabled={Boolean(timerStartedAt)} onChange={(event) => setSelectedDate(event.target.value)} />
+            <input id="record-date" type="date" value={selectedDate} disabled={timerInProgress} onChange={(event) => setSelectedDate(event.target.value)} />
             <span>{dateLabel(selectedDate)}</span>
           </div>
         </div>
@@ -599,18 +622,28 @@ export function LearningDashboard() {
           <div className="timer-builder">
             <label>
               <span>我要做什么？</span>
-              <input value={eventTitle} disabled={Boolean(timerStartedAt)} placeholder="例如：为巡检脚本补一组异常样例" onChange={(event) => setEventTitle(event.target.value)} />
+              <input value={eventTitle} disabled={timerInProgress} placeholder="例如：为巡检脚本补一组异常样例" onChange={(event) => setEventTitle(event.target.value)} />
             </label>
             <label>
               <span>能力主线</span>
-              <select value={eventCategory} disabled={Boolean(timerStartedAt)} onChange={(event) => setEventCategory(event.target.value as LearningCategory)}>
+              <select value={eventCategory} disabled={timerInProgress} onChange={(event) => setEventCategory(event.target.value as LearningCategory)}>
                 {(Object.keys(categoryMeta) as LearningCategory[]).map((category) => <option value={category} key={category}>{categoryMeta[category].label}</option>)}
               </select>
             </label>
-            {timerStartedAt ? (
-              <div className="timer-running">
-                <span>{formatTimer(timerElapsed)}</span>
-                <button className="button" type="button" onClick={finishTimer}>结束并写入</button>
+            {timerInProgress ? (
+              <div className="timer-running" data-paused={timerStartedAt ? undefined : true}>
+                <div className="timer-readout" aria-live="polite">
+                  <span>{formatTimer(timerElapsed)}</span>
+                  <small>{timerStartedAt ? "计时中" : "已暂停"}</small>
+                </div>
+                <div className="timer-actions">
+                  {timerStartedAt ? (
+                    <button className="button button-secondary" type="button" onClick={pauseTimer}>暂停</button>
+                  ) : (
+                    <button className="button button-secondary" type="button" onClick={resumeTimer}>继续计时</button>
+                  )}
+                  <button className="button" type="button" onClick={finishTimer}>结束并写入</button>
+                </div>
               </div>
             ) : (
               <button className="button timer-start" type="button" onClick={startTimer}>开始计时</button>

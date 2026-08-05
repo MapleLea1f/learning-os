@@ -89,7 +89,12 @@ h1 { max-width: 700px; position: relative; z-index: 1; margin: 0; color: #193e2d
 .timer-builder input:focus, .timer-builder select:focus, .goal-field input:focus, .notes-grid textarea:focus { border-color: #73b594; box-shadow: 0 0 0 3px rgba(115,181,148,.14); }
 .timer-start { min-height: 41px; }
 .timer-running { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 41px; border: 1px solid #a4d1b7; border-radius: 10px; padding: 4px 4px 4px 11px; background: #e0f5e7; }
-.timer-running span { color: #176447; font-family: var(--font-geist-mono); font-size: 15px; font-weight: 800; }
+.timer-running[data-paused="true"] { border-color: #dcc78c; background: #fff7df; }
+.timer-readout { display: grid; gap: 1px; }
+.timer-readout span { color: #176447; font-family: var(--font-geist-mono); font-size: 15px; font-weight: 800; }
+.timer-running[data-paused="true"] .timer-readout span { color: #8a6314; }
+.timer-readout small { color: #5e7065; font-size: 11px; }
+.timer-actions { display: flex; align-items: center; gap: 6px; }
 .timer-running .button { padding: 8px 10px; white-space: nowrap; }
 .today-summary { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 15px; border-bottom: 1px solid #e8ece5; padding: 0 0 13px; }
 .today-summary div { display: grid; gap: 4px; }
