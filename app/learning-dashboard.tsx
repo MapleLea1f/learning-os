@@ -11,7 +11,27 @@ type LearningEvent = {
   title: string;
   category: LearningCategory;
   minutes: number;
+  planId?: string;
 };
+
+type PlanPriority = "high" | "medium" | "low";
+type PlanStatus = "planned" | "in_progress" | "blocked" | "completed";
+
+type WorkPlan = {
+  id: string;
+  user_id: string;
+  title: string;
+  priority: PlanPriority;
+  target_date: string;
+  next_action: string;
+  details: string;
+  status: PlanStatus;
+  scheduled_date: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type PlanForm = Pick<WorkPlan, "title" | "priority" | "target_date" | "next_action" | "details" | "status">;
 
 type DayForm = {
   top_goal: string;
@@ -33,6 +53,19 @@ type StoredDay = DayForm & {
 };
 
 const historyPageSize = 8;
+
+const planPriorityMeta: Record<PlanPriority, string> = {
+  high: "高优先级",
+  medium: "中优先级",
+  low: "低优先级",
+};
+
+const planStatusMeta: Record<PlanStatus, string> = {
+  planned: "待处理",
+  in_progress: "进行中",
+  blocked: "阻塞",
+  completed: "已完成",
+};
 
 const categoryMeta: Record<LearningCategory, { label: string; target: number; description: string }> = {
   java_ai: { label: "Java / AI 应用", target: 45, description: "服务设计、检索评测、Java 工程" },
@@ -103,6 +136,26 @@ function blankForm(): DayForm {
   };
 }
 
+function blankPlanForm(targetDate: string): PlanForm {
+  return {
+    title: "",
+    priority: "medium",
+    target_date: targetDate,
+    next_action: "",
+    details: "",
+    status: "planned",
+  };
+}
+
+function aiBatchPlanForm(targetDate: string): PlanForm {
+  return {
+    ...blankPlanForm(targetDate),
+    title: "AI 批量化需求：",
+    next_action: "先确认输入、输出与验收标准，再拆出第一批可验证样本。",
+    details: "批量对象：\n输入来源：\n预期输出：\n验收标准：\n风险与边界：\n",
+  };
+}
+
 function isLearningCategory(value: unknown): value is LearningCategory {
   return value === "java_ai" || value === "platform" || value === "foundation";
 }
@@ -117,11 +170,13 @@ function normalizeEvents(value: unknown): LearningEvent[] {
     const minutes = typeof event.minutes === "number" ? Math.round(event.minutes) : 0;
     if (!title || !isLearningCategory(event.category) || minutes < 1) return [];
 
+    const planId = typeof event.planId === "string" && event.planId ? event.planId : undefined;
     return [{
       id: typeof event.id === "string" && event.id ? event.id : `restored-${index}`,
       title,
       category: event.category,
       minutes,
+      ...(planId ? { planId } : {}),
     }];
   });
 }
@@ -287,13 +342,19 @@ export function LearningDashboard() {
   const [authorized, setAuthorized] = useState(false);
   const [weeklyRecords, setWeeklyRecords] = useState<StoredDay[]>([]);
   const [historyRecords, setHistoryRecords] = useState<StoredDay[]>([]);
+  const [plans, setPlans] = useState<WorkPlan[]>([]);
   const [historyHasMore, setHistoryHasMore] = useState(false);
   const [loading, setLoading] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [planSaving, setPlanSaving] = useState(false);
   const [message, setMessage] = useState("");
+  const [planComposerOpen, setPlanComposerOpen] = useState(false);
+  const [editingPlanId, setEditingPlanId] = useState<string | null>(null);
+  const [planForm, setPlanForm] = useState<PlanForm>(() => blankPlanForm(toDateKey(new Date())));
   const [eventTitle, setEventTitle] = useState("");
   const [eventCategory, setEventCategory] = useState<LearningCategory>("java_ai");
+  const [timerPlanId, setTimerPlanId] = useState<string | null>(null);
   const [timerStartedAt, setTimerStartedAt] = useState<number | null>(null);
   const [timerElapsedBeforePause, setTimerElapsedBeforePause] = useState(0);
   const [timerNow, setTimerNow] = useState(0);
@@ -309,6 +370,10 @@ export function LearningDashboard() {
   const completedDays = weeklyRecords.filter((record) => record.completed).length;
   const timerInProgress = timerStartedAt !== null || timerElapsedBeforePause > 0;
   const timerElapsed = timerElapsedBeforePause + (timerStartedAt ? timerNow - timerStartedAt : 0);
+  const timerPlan = plans.find((plan) => plan.id === timerPlanId) ?? null;
+  const scheduledPlans = plans.filter((plan) => plan.status !== "completed" && plan.scheduled_date === selectedDate);
+  const otherOpenPlans = plans.filter((plan) => plan.status !== "completed" && plan.scheduled_date !== selectedDate);
+  const completedPlans = plans.filter((plan) => plan.status === "completed");
   const displayName = session?.user.user_metadata.user_name || session?.user.email?.split("@")[0] || "GitHub 用户";
 
   useEffect(() => {
@@ -340,6 +405,7 @@ export function LearningDashboard() {
       setForm(initialDraft ?? blankForm());
       setWeeklyRecords([]);
       setHistoryRecords([]);
+      setPlans([]);
       setHistoryHasMore(false);
       setAuthorized(false);
 
@@ -366,10 +432,11 @@ export function LearningDashboard() {
 
       setAuthorized(true);
       const startKey = weekStartKey(selectedDate);
-      const [{ data: today, error: todayError }, { data: week, error: weekError }, { data: history, error: historyError }] = await Promise.all([
+      const [{ data: today, error: todayError }, { data: week, error: weekError }, { data: history, error: historyError }, { data: planData, error: plansError }] = await Promise.all([
         client.from("learning_days").select("*").eq("record_date", selectedDate).maybeSingle(),
         client.from("learning_days").select("*").gte("record_date", startKey).lte("record_date", selectedDate).order("record_date", { ascending: true }),
         client.from("learning_days").select("*").order("record_date", { ascending: false }).range(0, historyPageSize - 1),
+        client.from("work_plans").select("*").order("target_date", { ascending: true }).order("created_at", { ascending: false }),
       ]);
 
       if (cancelled) return;
@@ -384,6 +451,11 @@ export function LearningDashboard() {
         const records = (history as StoredDay[] | null) ?? [];
         setHistoryRecords(records);
         setHistoryHasMore(records.length === historyPageSize);
+        if (plansError) {
+          setMessage("计划库尚未初始化。请在 Supabase 执行更新后的 schema.sql 后重新加载。");
+        } else {
+          setPlans((planData as WorkPlan[] | null) ?? []);
+        }
       }
       setLoading(false);
       setHistoryLoading(false);
@@ -403,6 +475,149 @@ export function LearningDashboard() {
     });
   }
 
+  function openPlanComposer(template: "general" | "ai_batch") {
+    setEditingPlanId(null);
+    setPlanForm(template === "ai_batch" ? aiBatchPlanForm(selectedDate) : blankPlanForm(selectedDate));
+    setPlanComposerOpen(true);
+  }
+
+  function editPlan(plan: WorkPlan) {
+    setEditingPlanId(plan.id);
+    setPlanForm({
+      title: plan.title,
+      priority: plan.priority,
+      target_date: plan.target_date,
+      next_action: plan.next_action,
+      details: plan.details,
+      status: plan.status,
+    });
+    setPlanComposerOpen(true);
+  }
+
+  function getPlanClient() {
+    const client = getSupabase();
+    if (!client) {
+      setMessage("计划库需要先配置 Supabase 同步。");
+      return null;
+    }
+    if (!session) {
+      setMessage("请先登录后再保存跨日计划。");
+      return null;
+    }
+    if (!authorized) {
+      setMessage("当前账号没有计划库写入权限。请先完成允许名单配置。");
+      return null;
+    }
+    return client;
+  }
+
+  function replacePlan(nextPlan: WorkPlan) {
+    setPlans((current) => {
+      const index = current.findIndex((plan) => plan.id === nextPlan.id);
+      if (index < 0) return [nextPlan, ...current];
+      return current.map((plan) => plan.id === nextPlan.id ? nextPlan : plan);
+    });
+  }
+
+  async function updateExistingPlan(plan: WorkPlan, changes: Partial<WorkPlan>, successMessage?: string) {
+    const client = getPlanClient();
+    if (!client) return;
+
+    setPlanSaving(true);
+    const { data, error } = await client
+      .from("work_plans")
+      .update({ ...changes, updated_at: new Date().toISOString() })
+      .eq("id", plan.id)
+      .select("*")
+      .single();
+
+    if (error || !data) {
+      setMessage(`更新计划失败：${error?.message ?? "未返回计划数据"}`);
+    } else {
+      replacePlan(data as WorkPlan);
+      if (successMessage) setMessage(successMessage);
+    }
+    setPlanSaving(false);
+  }
+
+  async function savePlan() {
+    const title = planForm.title.trim();
+    const nextAction = planForm.next_action.trim();
+    if (!title || !planForm.target_date || !nextAction) {
+      setMessage("请填写计划标题、目标日和下一步，再保存计划。");
+      return;
+    }
+
+    const client = getPlanClient();
+    if (!client || !session) return;
+
+    const payload = {
+      title,
+      priority: planForm.priority,
+      target_date: planForm.target_date,
+      next_action: nextAction,
+      details: planForm.details.trim(),
+      status: planForm.status,
+      updated_at: new Date().toISOString(),
+    };
+    setPlanSaving(true);
+
+    if (editingPlanId) {
+      const { data, error } = await client
+        .from("work_plans")
+        .update(payload)
+        .eq("id", editingPlanId)
+        .select("*")
+        .single();
+      if (error || !data) {
+        setMessage(`保存计划失败：${error?.message ?? "未返回计划数据"}`);
+      } else {
+        replacePlan(data as WorkPlan);
+        setMessage(`已更新计划「${title}」。`);
+        setPlanComposerOpen(false);
+        setEditingPlanId(null);
+      }
+    } else {
+      const { data, error } = await client
+        .from("work_plans")
+        .insert({ ...payload, user_id: session.user.id, scheduled_date: null })
+        .select("*")
+        .single();
+      if (error || !data) {
+        setMessage(`保存计划失败：${error?.message ?? "未返回计划数据"}`);
+      } else {
+        replacePlan(data as WorkPlan);
+        setMessage(`已创建计划「${title}」，可手动排入当天。`);
+        setPlanComposerOpen(false);
+      }
+    }
+    setPlanSaving(false);
+  }
+
+  function schedulePlan(plan: WorkPlan) {
+    void updateExistingPlan(plan, { scheduled_date: selectedDate }, `已安排「${plan.title}」在 ${dateLabel(selectedDate)} 处理。`);
+  }
+
+  function unschedulePlan(plan: WorkPlan) {
+    void updateExistingPlan(plan, { scheduled_date: null }, `已将「${plan.title}」移出当天安排。`);
+  }
+
+  function prepareTimerForPlan(plan: WorkPlan) {
+    if (timerInProgress) {
+      setMessage("请先结束或暂停当前计时，再关联另一条计划。");
+      return;
+    }
+    setTimerPlanId(plan.id);
+    setEventTitle(plan.title);
+    setMessage(`已关联「${plan.title}」。选择能力主线后开始计时，计划会变为进行中；结束一次投入不会自动完成计划。`);
+  }
+
+  function clearTimerPlan() {
+    if (timerInProgress) return;
+    setTimerPlanId(null);
+    setMessage("已取消本次计时与计划的关联。");
+  }
+
   function startTimer() {
     if (!eventTitle.trim()) {
       setMessage("先写下这段时间要完成的具体事件，再开始计时。");
@@ -410,6 +625,9 @@ export function LearningDashboard() {
     }
     const startedAt = Date.now();
     setMessage("");
+    if (timerPlan && timerPlan.status !== "in_progress") {
+      void updateExistingPlan(timerPlan, { status: "in_progress" });
+    }
     setTimerElapsedBeforePause(0);
     setTimerNow(startedAt);
     setTimerStartedAt(startedAt);
@@ -437,12 +655,14 @@ export function LearningDashboard() {
     const elapsed = timerElapsedBeforePause + (timerStartedAt ? Date.now() - timerStartedAt : 0);
     const minutes = Math.max(1, Math.round(elapsed / 60000));
     const title = eventTitle.trim();
+    const planId = timerPlanId;
     updateForm((current) => ({
       ...current,
-      events: [...current.events, { id: createEventId(), title, category: eventCategory, minutes }],
+      events: [...current.events, { id: createEventId(), title, category: eventCategory, minutes, ...(planId ? { planId } : {}) }],
     }));
     setTimerStartedAt(null);
     setTimerElapsedBeforePause(0);
+    setTimerPlanId(null);
     setEventTitle("");
     setMessage(`已记录「${title}」：${formatMinutes(minutes)}。`);
   }
@@ -469,6 +689,8 @@ export function LearningDashboard() {
     setForm(blankForm());
     setWeeklyRecords([]);
     setHistoryRecords([]);
+    setPlans([]);
+    setTimerPlanId(null);
   }
 
   async function saveDay() {
@@ -608,6 +830,84 @@ export function LearningDashboard() {
         ))}
       </section>
 
+      <section className="card plan-library">
+        <div className="card-head plan-library-head">
+          <div>
+            <div className="eyebrow">跨日需求计划库</div>
+            <h2 className="card-title">先把需求放进计划，再把投入沉淀成可追溯事件。</h2>
+            <p className="card-caption">计划可跨日保留；只有你手动排入的事项会出现在当天。一次计时结束不会自动关闭长期计划。</p>
+          </div>
+          <div className="plan-head-actions">
+            <button className="button button-secondary" type="button" disabled={!configured || !session || !authorized || planSaving} onClick={() => openPlanComposer("general")}>新建计划</button>
+            <button className="button" type="button" disabled={!configured || !session || !authorized || planSaving} onClick={() => openPlanComposer("ai_batch")}>AI 批量化示例</button>
+          </div>
+        </div>
+
+        {!configured || !session || !authorized ? (
+          <p className="empty-state">登录并完成允许名单配置后，即可保存跨日计划并在不同设备上继续跟进。</p>
+        ) : (
+          <>
+            {planComposerOpen && (
+              <form className="plan-composer" onSubmit={(event) => { event.preventDefault(); void savePlan(); }}>
+                <div className="plan-composer-head">
+                  <div><strong>{editingPlanId ? "编辑计划" : "快速记录计划"}</strong><span>AI 批量化示例只是静态预填内容，不会调用 AI 或要求 API Key。</span></div>
+                  <button className="button-quiet" type="button" onClick={() => { setPlanComposerOpen(false); setEditingPlanId(null); }}>收起</button>
+                </div>
+                <div className="plan-form-grid">
+                  <label className="plan-title-field"><span>计划标题</span><input value={planForm.title} autoFocus placeholder="例如：梳理 AI 批量处理需求的输入和验收标准" onChange={(event) => setPlanForm((current) => ({ ...current, title: event.target.value }))} /></label>
+                  <label><span>优先级</span><select value={planForm.priority} onChange={(event) => setPlanForm((current) => ({ ...current, priority: event.target.value as PlanPriority }))}>{(Object.keys(planPriorityMeta) as PlanPriority[]).map((priority) => <option key={priority} value={priority}>{planPriorityMeta[priority]}</option>)}</select></label>
+                  <label><span>目标日</span><input type="date" value={planForm.target_date} onChange={(event) => setPlanForm((current) => ({ ...current, target_date: event.target.value }))} /></label>
+                  <label><span>状态</span><select value={planForm.status} onChange={(event) => setPlanForm((current) => ({ ...current, status: event.target.value as PlanStatus }))}>{(Object.keys(planStatusMeta) as PlanStatus[]).map((status) => <option key={status} value={status}>{planStatusMeta[status]}</option>)}</select></label>
+                  <label className="plan-wide-field"><span>下一步</span><input value={planForm.next_action} placeholder="例如：先拿到一小批脱敏样本并确认输出格式" onChange={(event) => setPlanForm((current) => ({ ...current, next_action: event.target.value }))} /></label>
+                  <label className="plan-wide-field"><span>需求说明（可选）</span><textarea value={planForm.details} placeholder="记录背景、范围、验收标准、风险或依赖；不要填写敏感信息。" onChange={(event) => setPlanForm((current) => ({ ...current, details: event.target.value }))} /></label>
+                </div>
+                <div className="plan-composer-actions">
+                  <button className="button button-secondary" type="button" onClick={() => { setPlanComposerOpen(false); setEditingPlanId(null); }}>取消</button>
+                  <button className="button" type="submit" disabled={planSaving}>{planSaving ? "正在保存…" : editingPlanId ? "保存修改" : "保存计划"}</button>
+                </div>
+              </form>
+            )}
+
+            <div className="plan-section-head"><div><span className="eyebrow">当天安排</span><strong>{dateLabel(selectedDate)}</strong></div><span>{scheduledPlans.length} 条已排入</span></div>
+            <div className="plan-list">
+              {scheduledPlans.length ? scheduledPlans.map((plan) => <article className="plan-row" data-status={plan.status} key={plan.id}>
+                <div className="plan-row-main">
+                  <div className="plan-badges"><span className={`plan-priority ${plan.priority}`}>{planPriorityMeta[plan.priority]}</span><span className={`plan-status ${plan.status}`}>{planStatusMeta[plan.status]}</span></div>
+                  <strong>{plan.title}</strong>
+                  <p><b>下一步：</b>{plan.next_action}</p>
+                  <span className="plan-meta">目标日 {plan.target_date}</span>
+                  {plan.details && <details className="plan-details"><summary>查看需求说明</summary><p>{plan.details}</p></details>}
+                </div>
+                <div className="plan-row-actions">
+                  <button className="button" type="button" disabled={planSaving || timerInProgress} onClick={() => prepareTimerForPlan(plan)}>关联到计时器</button>
+                  <button className="button button-secondary" type="button" disabled={planSaving} onClick={() => unschedulePlan(plan)}>移出当天</button>
+                  <select aria-label={`更新计划状态：${plan.title}`} value={plan.status} disabled={planSaving} onChange={(event) => void updateExistingPlan(plan, { status: event.target.value as PlanStatus }, `已更新「${plan.title}」状态。`)}>{(Object.keys(planStatusMeta) as PlanStatus[]).map((status) => <option key={status} value={status}>{planStatusMeta[status]}</option>)}</select>
+                  <button className="button-quiet" type="button" disabled={planSaving} onClick={() => editPlan(plan)}>编辑</button>
+                </div>
+              </article>) : <p className="empty-state">今天还没有排入计划。可以从下方需求库选择一项，或直接新建。</p>}
+            </div>
+
+            <details className="plan-pool" open={otherOpenPlans.length < 4}>
+              <summary>未排入当天的进行中计划（{otherOpenPlans.length}）</summary>
+              <div className="plan-list">
+                {otherOpenPlans.length ? otherOpenPlans.map((plan) => <article className="plan-row compact" data-status={plan.status} key={plan.id}>
+                  <div className="plan-row-main"><div className="plan-badges"><span className={`plan-priority ${plan.priority}`}>{planPriorityMeta[plan.priority]}</span><span className={`plan-status ${plan.status}`}>{planStatusMeta[plan.status]}</span></div><strong>{plan.title}</strong><p><b>下一步：</b>{plan.next_action}</p><span className="plan-meta">目标日 {plan.target_date}{plan.scheduled_date ? ` · 当前安排 ${plan.scheduled_date}` : " · 尚未安排"}</span></div>
+                  <div className="plan-row-actions"><button className="button button-secondary" type="button" disabled={planSaving} onClick={() => schedulePlan(plan)}>{plan.scheduled_date ? "改排到当天" : "排入当天"}</button><button className="button-quiet" type="button" disabled={planSaving} onClick={() => editPlan(plan)}>编辑</button></div>
+                </article>) : <p className="empty-state">暂无其他未完成计划。</p>}
+              </div>
+            </details>
+
+            <details className="plan-pool completed-plans">
+              <summary>已完成计划（{completedPlans.length}）</summary>
+              <div className="plan-list">
+                {completedPlans.map((plan) => <article className="plan-row compact" data-status={plan.status} key={plan.id}><div className="plan-row-main"><div className="plan-badges"><span className={`plan-priority ${plan.priority}`}>{planPriorityMeta[plan.priority]}</span><span className="plan-status completed">已完成</span></div><strong>{plan.title}</strong><p><b>最后下一步：</b>{plan.next_action}</p><span className="plan-meta">目标日 {plan.target_date}</span></div><div className="plan-row-actions"><button className="button-quiet" type="button" disabled={planSaving} onClick={() => editPlan(plan)}>查看 / 重开</button></div></article>)}
+                {!completedPlans.length && <p className="empty-state">完成的计划会保留在这里，方便以后回看。</p>}
+              </div>
+            </details>
+          </>
+        )}
+      </section>
+
       <section className="main-grid">
         <section className="card focus-card">
           <div className="card-head">
@@ -618,6 +918,8 @@ export function LearningDashboard() {
             </div>
             {loading && <span className="sync-pill">正在读取…</span>}
           </div>
+
+          {timerPlan && <div className="timer-plan-link"><div><span>本次投入已关联计划</span><strong>{timerPlan.title}</strong></div>{!timerInProgress && <button className="button-quiet" type="button" onClick={clearTimerPlan}>取消关联</button>}</div>}
 
           <div className="timer-builder">
             <label>
@@ -656,14 +958,15 @@ export function LearningDashboard() {
           </div>
 
           <div className="event-list" aria-live="polite">
-            {form.events.length ? form.events.map((event) => (
-              <article className="event-row" key={event.id}>
+            {form.events.length ? form.events.map((event) => {
+              const linkedPlan = event.planId ? plans.find((plan) => plan.id === event.planId) : null;
+              return <article className="event-row" key={event.id}>
                 <span className={`event-dot ${event.category}`} />
-                <div><strong>{event.title}</strong><span>{categoryMeta[event.category].label}</span></div>
+                <div><strong>{event.title}</strong><span>{categoryMeta[event.category].label}{linkedPlan ? ` · 关联计划：${linkedPlan.title}` : ""}</span></div>
                 <time>{formatMinutes(event.minutes)}</time>
                 <button className="button-quiet" type="button" onClick={() => removeEvent(event.id)} aria-label={`删除事件：${event.title}`}>删除</button>
-              </article>
-            )) : <p className="empty-state">还没有事件。选择一件 20 分钟内可完成的小事，点击“开始计时”。</p>}
+              </article>;
+            }) : <p className="empty-state">还没有事件。选择一件 20 分钟内可完成的小事，点击“开始计时”。</p>}
           </div>
 
           <label className="goal-field">

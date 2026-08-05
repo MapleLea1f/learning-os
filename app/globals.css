@@ -75,6 +75,60 @@ h1 { max-width: 700px; position: relative; z-index: 1; margin: 0; color: #193e2d
 .stage-card h2 { margin: 7px 0 5px; color: #314437; font-size: 14px; line-height: 1.35; }
 .stage-card p { margin: 0; color: #7a867e; font-size: 11px; line-height: 1.5; }
 
+.plan-library { margin-bottom: 18px; }
+.plan-library-head { margin-bottom: 15px; }
+.plan-head-actions, .plan-composer-actions, .plan-row-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
+.plan-composer { margin: 0 0 16px; border: 1px solid #cbded0; border-radius: 15px; padding: 15px; background: #f1f8f2; }
+.plan-composer-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+.plan-composer-head > div { display: grid; gap: 4px; }
+.plan-composer-head strong { color: #315744; font-size: 14px; }
+.plan-composer-head span { color: #718075; font-size: 11px; line-height: 1.45; }
+.plan-form-grid { display: grid; grid-template-columns: minmax(180px, 1.5fr) repeat(3, minmax(120px, .6fr)); gap: 10px; }
+.plan-form-grid label { display: block; }
+.plan-form-grid label span { display: block; margin: 0 0 7px; color: #5e7065; font-size: 12px; }
+.plan-form-grid input, .plan-form-grid select, .plan-form-grid textarea, .plan-row-actions select { width: 100%; border: 1px solid #d4e1d6; border-radius: 10px; padding: 9px 10px; color: #233b2e; outline: 0; background: #fffefa; }
+.plan-form-grid input:focus, .plan-form-grid select:focus, .plan-form-grid textarea:focus, .plan-row-actions select:focus { border-color: #73b594; box-shadow: 0 0 0 3px rgba(115,181,148,.14); }
+.plan-form-grid textarea { min-height: 82px; resize: vertical; line-height: 1.5; }
+.plan-title-field { grid-column: span 2; }
+.plan-wide-field { grid-column: 1 / -1; }
+.plan-composer-actions { justify-content: flex-end; margin-top: 12px; }
+.plan-section-head { display: flex; align-items: end; justify-content: space-between; gap: 12px; border-bottom: 1px solid #e6ece4; padding: 0 1px 9px; }
+.plan-section-head > div { display: grid; gap: 3px; }
+.plan-section-head .eyebrow { margin: 0; }
+.plan-section-head strong { color: #355744; font-size: 14px; }
+.plan-section-head > span { color: #7c8981; font-size: 11px; }
+.plan-list { display: grid; }
+.plan-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 18px; border-bottom: 1px solid #e9eee8; padding: 14px 1px; }
+.plan-row[data-status="blocked"] { border-left: 3px solid #db9a58; padding-left: 10px; }
+.plan-row[data-status="in_progress"] { border-left: 3px solid #72b18c; padding-left: 10px; }
+.plan-row-main { min-width: 0; }
+.plan-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 7px; }
+.plan-priority, .plan-status { display: inline-flex; align-items: center; border-radius: 999px; padding: 3px 7px; font-size: 10px; font-weight: 700; }
+.plan-priority.high { color: #91483d; background: #fbe7e1; }
+.plan-priority.medium { color: #8a6716; background: #fff2c9; }
+.plan-priority.low { color: #4d6d82; background: #e4f0f7; }
+.plan-status.planned { color: #597062; background: #edf3ed; }
+.plan-status.in_progress { color: #1d6d4a; background: #dff4e7; }
+.plan-status.blocked { color: #986321; background: #fff0d9; }
+.plan-status.completed { color: #5e6687; background: #ecebfa; }
+.plan-row-main > strong { display: block; overflow: hidden; color: #314a3b; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
+.plan-row-main > p { margin: 7px 0 5px; color: #697b6f; font-size: 12px; line-height: 1.5; }
+.plan-row-main > p b { color: #46614f; }
+.plan-meta { color: #8a968f; font-family: var(--font-geist-mono); font-size: 10px; }
+.plan-details { margin-top: 9px; color: #67796d; font-size: 11px; line-height: 1.5; }
+.plan-details summary { color: #4c6b59; cursor: pointer; }
+.plan-details p { white-space: pre-wrap; }
+.plan-row-actions { justify-content: flex-end; max-width: 310px; }
+.plan-row-actions select { width: auto; min-width: 82px; padding: 7px 8px; font-size: 11px; }
+.plan-row-actions .button { padding: 8px 10px; white-space: nowrap; }
+.plan-pool { margin-top: 15px; border-top: 1px solid #e6ece4; padding-top: 13px; }
+.plan-pool summary { color: #506b59; cursor: pointer; font-size: 12px; font-weight: 700; }
+.completed-plans { opacity: .84; }
+.timer-plan-link { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; border: 1px solid #c7d9d9; border-radius: 11px; padding: 8px 10px; background: #edf7f5; }
+.timer-plan-link div { display: grid; gap: 2px; }
+.timer-plan-link span { color: #668178; font-size: 10px; }
+.timer-plan-link strong { color: #295e4a; font-size: 12px; }
+
 .main-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(300px, .75fr); gap: 18px; align-items: start; }
 .side-stack { display: grid; gap: 18px; }
 .card { border: 1px solid var(--line); border-radius: 20px; padding: 21px; background: var(--panel); box-shadow: var(--shadow); }
@@ -162,6 +216,8 @@ h1 { max-width: 700px; position: relative; z-index: 1; margin: 0; color: #193e2d
 @media (max-width: 950px) {
   .north-star, .main-grid { grid-template-columns: 1fr; }
   .stage-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .plan-form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .plan-title-field { grid-column: auto; }
 }
 
 @media (max-width: 680px) {
@@ -173,6 +229,14 @@ h1 { max-width: 700px; position: relative; z-index: 1; margin: 0; color: #193e2d
   .stage-grid, .notes-grid { grid-template-columns: 1fr; }
   .timer-builder { grid-template-columns: 1fr; }
   .timer-running { min-height: 44px; }
+  .plan-library-head, .plan-composer-head, .plan-section-head, .timer-plan-link { align-items: flex-start; flex-direction: column; }
+  .plan-head-actions { width: 100%; }
+  .plan-head-actions .button { flex: 1 1 150px; }
+  .plan-form-grid { grid-template-columns: 1fr; }
+  .plan-title-field, .plan-wide-field { grid-column: auto; }
+  .plan-row { grid-template-columns: 1fr; gap: 11px; }
+  .plan-row-actions { justify-content: flex-start; max-width: none; }
+  .plan-row-actions select { flex: 1 1 120px; }
   .history-row { grid-template-columns: 1fr; gap: 8px; }
   .history-total { text-align: left; }
   .archive-count { display: none; }

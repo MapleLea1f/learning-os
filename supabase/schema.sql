@@ -24,6 +24,20 @@ create table if not exists public.learning_days (
   unique (user_id, record_date)
 );
 
+create table if not exists public.work_plans (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users (id) on delete cascade,
+  title text not null,
+  priority text not null default 'medium' check (priority in ('high', 'medium', 'low')),
+  target_date date not null,
+  next_action text not null,
+  details text not null default '',
+  status text not null default 'planned' check (status in ('planned', 'in_progress', 'blocked', 'completed')),
+  scheduled_date date,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
 -- Safe for existing installations: store the event title, category and timer
 -- result alongside the existing aggregate minute columns.
 alter table public.learning_days
@@ -32,8 +46,15 @@ alter table public.learning_days
 create index if not exists learning_days_user_date_idx
   on public.learning_days (user_id, record_date desc);
 
+create index if not exists work_plans_user_schedule_idx
+  on public.work_plans (user_id, scheduled_date, target_date);
+
+create index if not exists work_plans_user_status_idx
+  on public.work_plans (user_id, status, target_date);
+
 alter table public.allowed_users enable row level security;
 alter table public.learning_days enable row level security;
+alter table public.work_plans enable row level security;
 
 -- Security definer is intentional: RLS policies can check the allowlist without
 -- exposing the full allowlist to a browser client.
@@ -59,6 +80,12 @@ create policy "read own allowlist row"
 drop policy if exists "approved user manages own learning records" on public.learning_days;
 create policy "approved user manages own learning records"
   on public.learning_days for all to authenticated
+  using (user_id = auth.uid() and public.is_allowed_user())
+  with check (user_id = auth.uid() and public.is_allowed_user());
+
+drop policy if exists "approved user manages own work plans" on public.work_plans;
+create policy "approved user manages own work plans"
+  on public.work_plans for all to authenticated
   using (user_id = auth.uid() and public.is_allowed_user())
   with check (user_id = auth.uid() and public.is_allowed_user());
 

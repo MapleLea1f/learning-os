@@ -6,6 +6,8 @@
 
 ![Learning OS social preview](./public/og-career-path.png)
 
+> 已配置旧版看板的用户：请在 Supabase SQL Editor 再次运行完整的 [`supabase/schema.sql`](./supabase/schema.sql)。该脚本会安全新增跨日 `work_plans` 计划表和权限策略，不会删除已有的学习日记录或事件。
+
 ## 先弄清楚：三个东西分别做什么
 
 很多配置出错，是把下面三件事当成了一件事。
