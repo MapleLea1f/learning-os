@@ -118,6 +118,11 @@ h1 { max-width: 700px; position: relative; z-index: 1; margin: 0; color: #193e2d
 .plan-details { margin-top: 9px; color: #67796d; font-size: 11px; line-height: 1.5; }
 .plan-details summary { color: #4c6b59; cursor: pointer; }
 .plan-details p { white-space: pre-wrap; }
+.plan-effort, .plan-effort-empty { display: block; margin-top: 8px; color: #527164; font-size: 11px; line-height: 1.5; }
+.plan-effort summary { cursor: pointer; font-weight: 700; }
+.plan-effort-empty { color: #8a968f; }
+.plan-effort-log { display: grid; gap: 4px; margin-top: 7px; border-left: 2px solid #dbe8df; padding-left: 8px; }
+.plan-effort-log span { color: #75877c; font-family: var(--font-geist-mono); font-size: 10px; }
 .plan-row-actions { justify-content: flex-end; max-width: 310px; }
 .plan-row-actions select { width: auto; min-width: 82px; padding: 7px 8px; font-size: 11px; }
 .plan-row-actions .button { padding: 8px 10px; white-space: nowrap; }

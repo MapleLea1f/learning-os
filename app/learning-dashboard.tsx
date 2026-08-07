@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import { getSupabase, isSupabaseConfigured } from "./supabase-client";
 
@@ -52,7 +52,33 @@ type StoredDay = DayForm & {
   events?: unknown;
 };
 
+type PersistedTimer = {
+  id: string;
+  userId: string | null;
+  title: string;
+  category: LearningCategory;
+  planId: string | null;
+  recordDate: string;
+  startedAt: number | null;
+  elapsedBeforePause: number;
+  savedAt: number;
+};
+
+type PlanEffortEntry = {
+  id: string;
+  title: string;
+  category: LearningCategory;
+  minutes: number;
+  recordDate: string;
+};
+
+type PlanEffort = {
+  minutes: number;
+  entries: PlanEffortEntry[];
+};
+
 const historyPageSize = 8;
+const activeTimerStorageKey = "learning-os:active-timer";
 
 const planPriorityMeta: Record<PlanPriority, string> = {
   high: "高优先级",
@@ -217,6 +243,41 @@ function totalMinutes(events: LearningEvent[]) {
   return events.reduce((total, event) => total + event.minutes, 0);
 }
 
+type MergedEvent = {
+  key: string;
+  title: string;
+  category: LearningCategory;
+  minutes: number;
+  count: number;
+  ids: string[];
+  planId?: string;
+};
+
+function mergeEventsForDisplay(events: LearningEvent[]): MergedEvent[] {
+  const groups = new Map<string, MergedEvent>();
+  for (const event of events) {
+    const key = `${event.title}\u0000${event.category}`;
+    const existing = groups.get(key);
+    if (existing) {
+      existing.minutes += event.minutes;
+      existing.count += 1;
+      existing.ids.push(event.id);
+      if (!existing.planId && event.planId) existing.planId = event.planId;
+    } else {
+      groups.set(key, {
+        key,
+        title: event.title,
+        category: event.category,
+        minutes: event.minutes,
+        count: 1,
+        ids: [event.id],
+        ...(event.planId ? { planId: event.planId } : {}),
+      });
+    }
+  }
+  return Array.from(groups.values());
+}
+
 function formFromRecord(record: StoredDay): DayForm {
   return {
     top_goal: record.top_goal ?? "",
@@ -335,14 +396,83 @@ function createEventId() {
   return globalThis.crypto?.randomUUID?.() ?? `event-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
+function readPersistedTimer(): PersistedTimer | null {
+  try {
+    const raw = window.localStorage.getItem(activeTimerStorageKey);
+    if (!raw) return null;
+    const value: unknown = JSON.parse(raw);
+    if (!value || typeof value !== "object") return null;
+    const timer = value as Record<string, unknown>;
+    if (
+      typeof timer.id !== "string" || !timer.id ||
+      typeof timer.title !== "string" || !timer.title.trim() ||
+      !isLearningCategory(timer.category) ||
+      typeof timer.recordDate !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(timer.recordDate) ||
+      (typeof timer.startedAt !== "number" && timer.startedAt !== null) ||
+      typeof timer.elapsedBeforePause !== "number" || timer.elapsedBeforePause < 0
+    ) return null;
+
+    return {
+      id: timer.id,
+      userId: typeof timer.userId === "string" ? timer.userId : null,
+      title: timer.title.trim(),
+      category: timer.category,
+      planId: typeof timer.planId === "string" && timer.planId ? timer.planId : null,
+      recordDate: timer.recordDate,
+      startedAt: timer.startedAt,
+      elapsedBeforePause: timer.elapsedBeforePause,
+      savedAt: typeof timer.savedAt === "number" ? timer.savedAt : Date.now(),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writePersistedTimer(timer: PersistedTimer) {
+  try {
+    window.localStorage.setItem(activeTimerStorageKey, JSON.stringify(timer));
+  } catch {
+    // Timer recovery is best-effort when browser storage is unavailable.
+  }
+}
+
+function clearPersistedTimer() {
+  try {
+    window.localStorage.removeItem(activeTimerStorageKey);
+  } catch {
+    // The in-memory timer remains usable when browser storage is unavailable.
+  }
+}
+
+function planEffortFromRecords(records: Array<Pick<StoredDay, "record_date" | "events">>): Record<string, PlanEffort> {
+  return records.reduce<Record<string, PlanEffort>>((totals, record) => {
+    normalizeEvents(record.events).forEach((event) => {
+      if (!event.planId) return;
+      const current = totals[event.planId] ?? { minutes: 0, entries: [] };
+      current.minutes += event.minutes;
+      current.entries.push({
+        id: event.id,
+        title: event.title,
+        category: event.category,
+        minutes: event.minutes,
+        recordDate: record.record_date,
+      });
+      totals[event.planId] = current;
+    });
+    return totals;
+  }, {});
+}
+
 export function LearningDashboard() {
   const [selectedDate, setSelectedDate] = useState(() => toDateKey(new Date()));
   const [form, setForm] = useState<DayForm>(blankForm);
   const [session, setSession] = useState<Session | null>(null);
   const [authorized, setAuthorized] = useState(false);
+  const [authorizationChecked, setAuthorizationChecked] = useState(false);
   const [weeklyRecords, setWeeklyRecords] = useState<StoredDay[]>([]);
   const [historyRecords, setHistoryRecords] = useState<StoredDay[]>([]);
   const [plans, setPlans] = useState<WorkPlan[]>([]);
+  const [planEfforts, setPlanEfforts] = useState<Record<string, PlanEffort>>({});
   const [historyHasMore, setHistoryHasMore] = useState(false);
   const [loading, setLoading] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -355,9 +485,13 @@ export function LearningDashboard() {
   const [eventTitle, setEventTitle] = useState("");
   const [eventCategory, setEventCategory] = useState<LearningCategory>("java_ai");
   const [timerPlanId, setTimerPlanId] = useState<string | null>(null);
+  const [timerSessionId, setTimerSessionId] = useState<string | null>(null);
+  const [timerRecordDate, setTimerRecordDate] = useState<string | null>(null);
   const [timerStartedAt, setTimerStartedAt] = useState<number | null>(null);
   const [timerElapsedBeforePause, setTimerElapsedBeforePause] = useState(0);
   const [timerNow, setTimerNow] = useState(0);
+  const [pendingTimerRecovery, setPendingTimerRecovery] = useState<PersistedTimer | null>(() => typeof window === "undefined" ? null : readPersistedTimer());
+  const recoveringTimerRef = useRef<string | null>(null);
 
   const configured = isSupabaseConfigured;
   const currentDraftKey = useMemo(
@@ -366,15 +500,24 @@ export function LearningDashboard() {
   );
   const todayMinutes = useMemo(() => eventMinutes(form.events), [form.events]);
   const todayTotal = totalMinutes(form.events);
+  const mergedEvents = useMemo(() => mergeEventsForDisplay(form.events), [form.events]);
   const weekMinutes = weeklyRecords.reduce((sum, record) => sum + totalMinutes(eventsForRecord(record)), 0);
   const completedDays = weeklyRecords.filter((record) => record.completed).length;
-  const timerInProgress = timerStartedAt !== null || timerElapsedBeforePause > 0;
+  const timerInProgress = timerSessionId !== null;
   const timerElapsed = timerElapsedBeforePause + (timerStartedAt ? timerNow - timerStartedAt : 0);
   const timerPlan = plans.find((plan) => plan.id === timerPlanId) ?? null;
   const scheduledPlans = plans.filter((plan) => plan.status !== "completed" && plan.scheduled_date === selectedDate);
   const otherOpenPlans = plans.filter((plan) => plan.status !== "completed" && plan.scheduled_date !== selectedDate);
   const completedPlans = plans.filter((plan) => plan.status === "completed");
   const displayName = session?.user.user_metadata.user_name || session?.user.email?.split("@")[0] || "GitHub 用户";
+  const refreshPlanEfforts = useCallback(async () => {
+    const client = getSupabase();
+    if (!client || !session || !authorized) return;
+    const { data, error } = await client.from("learning_days").select("record_date, events");
+    if (!error) {
+      setPlanEfforts(planEffortFromRecords((data as Array<Pick<StoredDay, "record_date" | "events">> | null) ?? []));
+    }
+  }, [authorized, session]);
 
   useEffect(() => {
     if (!timerStartedAt) return;
@@ -383,18 +526,134 @@ export function LearningDashboard() {
   }, [timerStartedAt]);
 
   useEffect(() => {
-    if (!configured) return;
+    if (!timerSessionId || !timerRecordDate || !eventTitle.trim()) return;
+    writePersistedTimer({
+      id: timerSessionId,
+      userId: session?.user.id ?? null,
+      title: eventTitle.trim(),
+      category: eventCategory,
+      planId: timerPlanId,
+      recordDate: timerRecordDate,
+      startedAt: timerStartedAt,
+      elapsedBeforePause: timerElapsedBeforePause,
+      savedAt: Date.now(),
+    });
+  }, [eventCategory, eventTitle, session?.user.id, timerElapsedBeforePause, timerPlanId, timerRecordDate, timerSessionId, timerStartedAt]);
+
+  useEffect(() => {
+    if (!timerSessionId || !timerRecordDate) return;
+    const saveSnapshot = () => {
+      writePersistedTimer({
+        id: timerSessionId,
+        userId: session?.user.id ?? null,
+        title: eventTitle.trim(),
+        category: eventCategory,
+        planId: timerPlanId,
+        recordDate: timerRecordDate,
+        startedAt: timerStartedAt,
+        elapsedBeforePause: timerElapsedBeforePause,
+        savedAt: Date.now(),
+      });
+    };
+    window.addEventListener("pagehide", saveSnapshot);
+    return () => window.removeEventListener("pagehide", saveSnapshot);
+  }, [eventCategory, eventTitle, session?.user.id, timerElapsedBeforePause, timerPlanId, timerRecordDate, timerSessionId, timerStartedAt]);
+
+  useEffect(() => {
+    if (!configured) {
+      return;
+    }
     const client = getSupabase();
     if (!client) return;
 
-    client.auth.getSession().then(({ data }) => setSession(data.session));
+    client.auth.getSession().then(({ data }) => {
+      setSession(data.session);
+    });
     const { data: listener } = client.auth.onAuthStateChange((_event, nextSession) => {
       setSession(nextSession);
       setAuthorized(false);
+      setAuthorizationChecked(false);
     });
 
     return () => listener.subscription.unsubscribe();
   }, [configured]);
+
+  useEffect(() => {
+    if (!pendingTimerRecovery || recoveringTimerRef.current === pendingTimerRecovery.id) return;
+    if (configured && session && !authorizationChecked) return;
+    if (pendingTimerRecovery.userId && session?.user.id && pendingTimerRecovery.userId !== session.user.id) return;
+
+    const recoveredEvent: LearningEvent = {
+      id: pendingTimerRecovery.id,
+      title: pendingTimerRecovery.title,
+      category: pendingTimerRecovery.category,
+      minutes: Math.max(1, Math.round((pendingTimerRecovery.elapsedBeforePause + (pendingTimerRecovery.startedAt ? Date.now() - pendingTimerRecovery.startedAt : 0)) / 60000)),
+      ...(pendingTimerRecovery.planId ? { planId: pendingTimerRecovery.planId } : {}),
+    };
+    const recoveredDraftKey = draftKey(pendingTimerRecovery.userId ?? session?.user.id, pendingTimerRecovery.recordDate);
+    const mergeRecoveredEvent = (base: DayForm) => ({
+      ...base,
+      events: base.events.some((event) => event.id === recoveredEvent.id) ? base.events : [...base.events, recoveredEvent],
+    });
+    const finishRecovery = (nextForm: DayForm, synced: boolean) => {
+      if (!synced) writeDraft(recoveredDraftKey, nextForm);
+      clearPersistedTimer();
+      recoveringTimerRef.current = null;
+      setPendingTimerRecovery(null);
+      if (selectedDate === pendingTimerRecovery.recordDate) setForm(nextForm);
+      else setSelectedDate(pendingTimerRecovery.recordDate);
+      setMessage(synced ? `页面刷新前的计时已自动结束并同步：${recoveredEvent.title}。` : `页面刷新前的计时已自动结束，已保存在本地草稿，登录同步后会写入记录。`);
+    };
+
+    if (!configured || !session || !authorized) {
+      const existingDraft = readDraft(recoveredDraftKey) ?? blankForm();
+      finishRecovery(mergeRecoveredEvent(existingDraft), false);
+      return;
+    }
+
+    recoveringTimerRef.current = pendingTimerRecovery.id;
+    const client = getSupabase();
+    if (!client) {
+      const existingDraft = readDraft(recoveredDraftKey) ?? blankForm();
+      finishRecovery(mergeRecoveredEvent(existingDraft), false);
+      return;
+    }
+
+    async function recoverIntoCloud() {
+      const { data: storedDay, error: readError } = await client
+        .from("learning_days")
+        .select("*")
+        .eq("record_date", pendingTimerRecovery.recordDate)
+        .maybeSingle();
+      const existingDraft = readDraft(recoveredDraftKey);
+      const nextForm = mergeRecoveredEvent(existingDraft ?? (readError || !storedDay ? blankForm() : formFromRecord(storedDay as StoredDay)));
+      const minutes = eventMinutes(nextForm.events);
+      const { error: saveError } = await client.from("learning_days").upsert(
+        {
+          ...nextForm,
+          events: nextForm.events,
+          java_ai_minutes: minutes.java_ai,
+          platform_minutes: minutes.platform,
+          foundation_minutes: minutes.foundation,
+          user_id: session.user.id,
+          record_date: pendingTimerRecovery.recordDate,
+        },
+        { onConflict: "user_id,record_date" },
+      );
+
+      if (saveError) {
+        finishRecovery(nextForm, false);
+        return;
+      }
+      if (pendingTimerRecovery.planId) {
+        await client.from("work_plans").update({ status: "in_progress", updated_at: new Date().toISOString() }).eq("id", pendingTimerRecovery.planId);
+      }
+      void refreshPlanEfforts();
+      finishRecovery(nextForm, true);
+    }
+
+    void recoverIntoCloud();
+  }, [authorizationChecked, authorized, configured, pendingTimerRecovery, refreshPlanEfforts, selectedDate, session]);
 
   useEffect(() => {
     let cancelled = false;
@@ -406,10 +665,15 @@ export function LearningDashboard() {
       setWeeklyRecords([]);
       setHistoryRecords([]);
       setPlans([]);
+      setPlanEfforts({});
       setHistoryHasMore(false);
       setAuthorized(false);
+      setAuthorizationChecked(false);
 
-      if (!configured || !session) return;
+      if (!configured || !session) {
+        setAuthorizationChecked(true);
+        return;
+      }
       const client = getSupabase();
       if (!client) return;
 
@@ -427,16 +691,19 @@ export function LearningDashboard() {
         setMessage("此 GitHub 账号尚未获授权。请按 README 将你的 Supabase 用户 ID 写入允许名单。");
         setLoading(false);
         setHistoryLoading(false);
+        setAuthorizationChecked(true);
         return;
       }
 
       setAuthorized(true);
+      setAuthorizationChecked(true);
       const startKey = weekStartKey(selectedDate);
-      const [{ data: today, error: todayError }, { data: week, error: weekError }, { data: history, error: historyError }, { data: planData, error: plansError }] = await Promise.all([
+      const [{ data: today, error: todayError }, { data: week, error: weekError }, { data: history, error: historyError }, { data: planData, error: plansError }, { data: effortData }] = await Promise.all([
         client.from("learning_days").select("*").eq("record_date", selectedDate).maybeSingle(),
         client.from("learning_days").select("*").gte("record_date", startKey).lte("record_date", selectedDate).order("record_date", { ascending: true }),
         client.from("learning_days").select("*").order("record_date", { ascending: false }).range(0, historyPageSize - 1),
         client.from("work_plans").select("*").order("target_date", { ascending: true }).order("created_at", { ascending: false }),
+        client.from("learning_days").select("record_date, events"),
       ]);
 
       if (cancelled) return;
@@ -456,6 +723,7 @@ export function LearningDashboard() {
         } else {
           setPlans((planData as WorkPlan[] | null) ?? []);
         }
+        setPlanEfforts(planEffortFromRecords((effortData as Array<Pick<StoredDay, "record_date" | "events">> | null) ?? []));
       }
       setLoading(false);
       setHistoryLoading(false);
@@ -628,6 +896,8 @@ export function LearningDashboard() {
     if (timerPlan && timerPlan.status !== "in_progress") {
       void updateExistingPlan(timerPlan, { status: "in_progress" });
     }
+    setTimerSessionId(createEventId());
+    setTimerRecordDate(selectedDate);
     setTimerElapsedBeforePause(0);
     setTimerNow(startedAt);
     setTimerStartedAt(startedAt);
@@ -656,19 +926,24 @@ export function LearningDashboard() {
     const minutes = Math.max(1, Math.round(elapsed / 60000));
     const title = eventTitle.trim();
     const planId = timerPlanId;
+    const eventId = timerSessionId ?? createEventId();
     updateForm((current) => ({
       ...current,
-      events: [...current.events, { id: createEventId(), title, category: eventCategory, minutes, ...(planId ? { planId } : {}) }],
+      events: [...current.events, { id: eventId, title, category: eventCategory, minutes, ...(planId ? { planId } : {}) }],
     }));
     setTimerStartedAt(null);
     setTimerElapsedBeforePause(0);
+    setTimerSessionId(null);
+    setTimerRecordDate(null);
     setTimerPlanId(null);
+    clearPersistedTimer();
     setEventTitle("");
     setMessage(`已记录「${title}」：${formatMinutes(minutes)}。`);
   }
 
-  function removeEvent(id: string) {
-    updateForm((current) => ({ ...current, events: current.events.filter((event) => event.id !== id) }));
+  function removeEvents(ids: string[]) {
+    const removed = new Set(ids);
+    updateForm((current) => ({ ...current, events: current.events.filter((event) => !removed.has(event.id)) }));
   }
 
   async function signIn() {
@@ -740,6 +1015,7 @@ export function LearningDashboard() {
       const records = (history as StoredDay[] | null) ?? [];
       setHistoryRecords(records);
       setHistoryHasMore(records.length === historyPageSize);
+      void refreshPlanEfforts();
     }
     setSaving(false);
   }
@@ -764,6 +1040,17 @@ export function LearningDashboard() {
       setHistoryHasMore(records.length === historyPageSize);
     }
     setHistoryLoading(false);
+  }
+
+  function renderPlanEffort(planId: string) {
+    const effort = planEfforts[planId];
+    if (!effort) return <span className="plan-effort-empty">尚未记录投入</span>;
+    return <details className="plan-effort">
+      <summary>累计投入 {formatMinutes(effort.minutes)} · {effort.entries.length} 条记录</summary>
+      <div className="plan-effort-log">
+        {[...effort.entries].sort((left, right) => right.recordDate.localeCompare(left.recordDate)).map((entry) => <span key={entry.id}>{entry.recordDate} · {entry.title} · {formatMinutes(entry.minutes)}</span>)}
+      </div>
+    </details>;
   }
 
   return (
@@ -876,6 +1163,7 @@ export function LearningDashboard() {
                   <strong>{plan.title}</strong>
                   <p><b>下一步：</b>{plan.next_action}</p>
                   <span className="plan-meta">目标日 {plan.target_date}</span>
+                  {renderPlanEffort(plan.id)}
                   {plan.details && <details className="plan-details"><summary>查看需求说明</summary><p>{plan.details}</p></details>}
                 </div>
                 <div className="plan-row-actions">
@@ -891,7 +1179,7 @@ export function LearningDashboard() {
               <summary>未排入当天的进行中计划（{otherOpenPlans.length}）</summary>
               <div className="plan-list">
                 {otherOpenPlans.length ? otherOpenPlans.map((plan) => <article className="plan-row compact" data-status={plan.status} key={plan.id}>
-                  <div className="plan-row-main"><div className="plan-badges"><span className={`plan-priority ${plan.priority}`}>{planPriorityMeta[plan.priority]}</span><span className={`plan-status ${plan.status}`}>{planStatusMeta[plan.status]}</span></div><strong>{plan.title}</strong><p><b>下一步：</b>{plan.next_action}</p><span className="plan-meta">目标日 {plan.target_date}{plan.scheduled_date ? ` · 当前安排 ${plan.scheduled_date}` : " · 尚未安排"}</span></div>
+                  <div className="plan-row-main"><div className="plan-badges"><span className={`plan-priority ${plan.priority}`}>{planPriorityMeta[plan.priority]}</span><span className={`plan-status ${plan.status}`}>{planStatusMeta[plan.status]}</span></div><strong>{plan.title}</strong><p><b>下一步：</b>{plan.next_action}</p><span className="plan-meta">目标日 {plan.target_date}{plan.scheduled_date ? ` · 当前安排 ${plan.scheduled_date}` : " · 尚未安排"}</span>{renderPlanEffort(plan.id)}</div>
                   <div className="plan-row-actions"><button className="button button-secondary" type="button" disabled={planSaving} onClick={() => schedulePlan(plan)}>{plan.scheduled_date ? "改排到当天" : "排入当天"}</button><button className="button-quiet" type="button" disabled={planSaving} onClick={() => editPlan(plan)}>编辑</button></div>
                 </article>) : <p className="empty-state">暂无其他未完成计划。</p>}
               </div>
@@ -900,7 +1188,7 @@ export function LearningDashboard() {
             <details className="plan-pool completed-plans">
               <summary>已完成计划（{completedPlans.length}）</summary>
               <div className="plan-list">
-                {completedPlans.map((plan) => <article className="plan-row compact" data-status={plan.status} key={plan.id}><div className="plan-row-main"><div className="plan-badges"><span className={`plan-priority ${plan.priority}`}>{planPriorityMeta[plan.priority]}</span><span className="plan-status completed">已完成</span></div><strong>{plan.title}</strong><p><b>最后下一步：</b>{plan.next_action}</p><span className="plan-meta">目标日 {plan.target_date}</span></div><div className="plan-row-actions"><button className="button-quiet" type="button" disabled={planSaving} onClick={() => editPlan(plan)}>查看 / 重开</button></div></article>)}
+                {completedPlans.map((plan) => <article className="plan-row compact" data-status={plan.status} key={plan.id}><div className="plan-row-main"><div className="plan-badges"><span className={`plan-priority ${plan.priority}`}>{planPriorityMeta[plan.priority]}</span><span className="plan-status completed">已完成</span></div><strong>{plan.title}</strong><p><b>最后下一步：</b>{plan.next_action}</p><span className="plan-meta">目标日 {plan.target_date}</span>{renderPlanEffort(plan.id)}</div><div className="plan-row-actions"><button className="button-quiet" type="button" disabled={planSaving} onClick={() => editPlan(plan)}>查看 / 重开</button></div></article>)}
                 {!completedPlans.length && <p className="empty-state">完成的计划会保留在这里，方便以后回看。</p>}
               </div>
             </details>
@@ -954,17 +1242,17 @@ export function LearningDashboard() {
 
           <div className="today-summary">
             <div><span>今日已沉淀</span><strong>{formatMinutes(todayTotal)}</strong></div>
-            <p>{form.events.length ? `共 ${form.events.length} 条可复盘事件` : "完成一次具体行动后，记录会出现在这里。"}</p>
+            <p>{mergedEvents.length ? `共 ${mergedEvents.length} 条可复盘事件` : "完成一次具体行动后，记录会出现在这里。"}</p>
           </div>
 
           <div className="event-list" aria-live="polite">
-            {form.events.length ? form.events.map((event) => {
+            {mergedEvents.length ? mergedEvents.map((event) => {
               const linkedPlan = event.planId ? plans.find((plan) => plan.id === event.planId) : null;
-              return <article className="event-row" key={event.id}>
+              return <article className="event-row" key={event.key}>
                 <span className={`event-dot ${event.category}`} />
-                <div><strong>{event.title}</strong><span>{categoryMeta[event.category].label}{linkedPlan ? ` · 关联计划：${linkedPlan.title}` : ""}</span></div>
+                <div><strong>{event.title}</strong><span>{categoryMeta[event.category].label}{event.count > 1 ? ` · ${event.count} 次` : ""}{linkedPlan ? ` · 关联计划：${linkedPlan.title}` : ""}</span></div>
                 <time>{formatMinutes(event.minutes)}</time>
-                <button className="button-quiet" type="button" onClick={() => removeEvent(event.id)} aria-label={`删除事件：${event.title}`}>删除</button>
+                <button className="button-quiet" type="button" onClick={() => removeEvents(event.ids)} aria-label={`删除事件：${event.title}`}>删除</button>
               </article>;
             }) : <p className="empty-state">还没有事件。选择一件 20 分钟内可完成的小事，点击“开始计时”。</p>}
           </div>
@@ -1026,9 +1314,10 @@ export function LearningDashboard() {
         <div className="history-list">
           {historyRecords.length ? historyRecords.map((record) => {
             const events = eventsForRecord(record);
+            const mergedEvents = mergeEventsForDisplay(events);
             return <article className="history-row" key={record.id}>
               <button className="history-date" type="button" onClick={() => setSelectedDate(record.record_date)}><strong>{dateLabel(record.record_date)}</strong><span>{record.record_date}</span></button>
-              <div className="history-main"><strong>{record.top_goal || "未填写主目标"}</strong><div className="history-events">{events.length ? events.map((event) => <span key={event.id}>{event.title} · {event.minutes}m</span>) : <span>未记录具体事件</span>}</div></div>
+              <div className="history-main"><strong>{record.top_goal || "未填写主目标"}</strong><div className="history-events">{events.length ? mergedEvents.map((event) => <span key={event.key}>{event.title}{event.count > 1 ? ` ×${event.count}` : ""} · {event.minutes}m</span>) : <span>未记录具体事件</span>}</div></div>
               <div className="history-total"><strong>{formatMinutes(totalMinutes(events))}</strong><span>{record.completed ? "已闭环" : "进行中"}</span></div>
             </article>;
           }) : <p className="empty-state">{configured && session ? "还没有已同步的历史记录。保存今天的事件后，它会出现在这里。" : "登录并保存记录后，可以在这里查看全部历史。"}</p>}
