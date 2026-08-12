@@ -79,6 +79,9 @@ type PlanEffort = {
 
 const historyPageSize = 8;
 const activeTimerStorageKey = "learning-os:active-timer";
+const autosaveDelay = 1200;
+
+type SyncStatus = "idle" | "pending" | "saving" | "saved" | "offline" | "error" | "local";
 
 const planPriorityMeta: Record<PlanPriority, string> = {
   high: "高优先级",
@@ -122,11 +125,10 @@ const careerStages = [
   },
 ];
 
-const assistantProjectSteps = [
-  "用公开资料或自建样例，回答一类明确的问题。",
-  "给每个答案保留来源、评测问题和失败样本。",
-  "把服务部署起来，观察健康状态、延迟和错误。",
-  "演练一次失败恢复，并把过程写进 README。",
+const primaryProjectSteps = [
+  "识别物品与缺失信息，减少来回补充。",
+  "生成标题、描述和买家回复，用户自己发布。",
+  "标出价格依据与不确定项，不登录账号、不自动操作。",
 ];
 
 function toDateKey(date: Date) {
@@ -325,7 +327,7 @@ function isLegacyDayForm(value: unknown): value is Omit<DayForm, "events"> & Rec
 
 function readDraft(key: string): DayForm | null {
   try {
-    const value = window.sessionStorage.getItem(key);
+    const value = window.localStorage.getItem(key) ?? window.sessionStorage.getItem(key);
     if (!value) return null;
 
     const draft: unknown = JSON.parse(value);
@@ -352,13 +354,22 @@ function readDraft(key: string): DayForm | null {
 
 function writeDraft(key: string, form: DayForm) {
   try {
-    window.sessionStorage.setItem(key, JSON.stringify(form));
+    window.localStorage.setItem(key, JSON.stringify(form));
   } catch {
-    // The dashboard remains usable when browser storage is unavailable.
+    try {
+      window.sessionStorage.setItem(key, JSON.stringify(form));
+    } catch {
+      // The dashboard remains usable when browser storage is unavailable.
+    }
   }
 }
 
 function clearDraft(key: string) {
+  try {
+    window.localStorage.removeItem(key);
+  } catch {
+    // The dashboard remains usable when browser storage is unavailable.
+  }
   try {
     window.sessionStorage.removeItem(key);
   } catch {
@@ -477,6 +488,8 @@ export function LearningDashboard() {
   const [loading, setLoading] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>("idle");
+  const [dateChanging, setDateChanging] = useState(false);
   const [planSaving, setPlanSaving] = useState(false);
   const [message, setMessage] = useState("");
   const [planComposerOpen, setPlanComposerOpen] = useState(false);
@@ -492,6 +505,13 @@ export function LearningDashboard() {
   const [timerNow, setTimerNow] = useState(0);
   const [pendingTimerRecovery, setPendingTimerRecovery] = useState<PersistedTimer | null>(() => typeof window === "undefined" ? null : readPersistedTimer());
   const recoveringTimerRef = useRef<string | null>(null);
+  const formRef = useRef(form);
+  const saveVersionRef = useRef(0);
+  const latestSaveRef = useRef<{ version: number; form: DayForm; date: string } | null>(null);
+  const autosaveTimerRef = useRef<number | null>(null);
+  const savingRef = useRef(false);
+  const savingPromiseRef = useRef<Promise<boolean> | null>(null);
+  const flushAutosaveRef = useRef<() => Promise<boolean>>(() => Promise.resolve(false));
 
   const configured = isSupabaseConfigured;
   const currentDraftKey = useMemo(
@@ -510,6 +530,15 @@ export function LearningDashboard() {
   const otherOpenPlans = plans.filter((plan) => plan.status !== "completed" && plan.scheduled_date !== selectedDate);
   const completedPlans = plans.filter((plan) => plan.status === "completed");
   const displayName = session?.user.user_metadata.user_name || session?.user.email?.split("@")[0] || "GitHub 用户";
+  const syncStatusLabel: Record<SyncStatus, string> = {
+    idle: configured ? "等待记录" : "本地预览",
+    pending: "待同步",
+    saving: "正在同步…",
+    saved: "已自动保存",
+    offline: "离线草稿",
+    error: "同步失败",
+    local: "仅保存在本机",
+  };
   const refreshPlanEfforts = useCallback(async () => {
     const client = getSupabase();
     if (!client || !session || !authorized) return;
@@ -518,6 +547,106 @@ export function LearningDashboard() {
       setPlanEfforts(planEffortFromRecords((data as Array<Pick<StoredDay, "record_date" | "events">> | null) ?? []));
     }
   }, [authorized, session]);
+
+  const refreshSavedViews = useCallback(async (dateKey: string) => {
+    const client = getSupabase();
+    if (!client || !session || !authorized) return;
+    const [{ data: week }, { data: history }] = await Promise.all([
+      client.from("learning_days").select("*").gte("record_date", weekStartKey(dateKey)).lte("record_date", dateKey).order("record_date", { ascending: true }),
+      client.from("learning_days").select("*").order("record_date", { ascending: false }).range(0, historyPageSize - 1),
+    ]);
+    setWeeklyRecords((week as StoredDay[] | null) ?? []);
+    const records = (history as StoredDay[] | null) ?? [];
+    setHistoryRecords(records);
+    setHistoryHasMore(records.length === historyPageSize);
+    void refreshPlanEfforts();
+  }, [authorized, refreshPlanEfforts, session]);
+
+  const persistDay = useCallback(async (savedForm: DayForm, dateKey: string) => {
+    const client = getSupabase();
+    if (!client || !session || !authorized) return false;
+
+    const minutes = eventMinutes(savedForm.events);
+    const { error } = await client.from("learning_days").upsert(
+      {
+        ...savedForm,
+        events: savedForm.events,
+        java_ai_minutes: minutes.java_ai,
+        platform_minutes: minutes.platform,
+        foundation_minutes: minutes.foundation,
+        user_id: session.user.id,
+        record_date: dateKey,
+      },
+      { onConflict: "user_id,record_date" },
+    );
+
+    if (error) return false;
+    await refreshSavedViews(dateKey);
+    return true;
+  }, [authorized, refreshSavedViews, session]);
+
+  const flushAutosave = useCallback(async () => {
+    if (autosaveTimerRef.current !== null) {
+      window.clearTimeout(autosaveTimerRef.current);
+      autosaveTimerRef.current = null;
+    }
+    const snapshot = latestSaveRef.current;
+    if (!snapshot) return false;
+    if (savingRef.current) return savingPromiseRef.current ?? false;
+    if (!configured || !session || !authorized) {
+      setSyncStatus("local");
+      latestSaveRef.current = null;
+      return false;
+    }
+
+    savingRef.current = true;
+    setSaving(true);
+    setSyncStatus("saving");
+    const savePromise = persistDay(snapshot.form, snapshot.date);
+    savingPromiseRef.current = savePromise;
+    const saved = await savePromise;
+    savingPromiseRef.current = null;
+    savingRef.current = false;
+    setSaving(false);
+
+    const isLatest = latestSaveRef.current?.version === snapshot.version;
+    if (saved) {
+      if (isLatest) {
+        latestSaveRef.current = null;
+        const key = draftKey(session.user.id, snapshot.date);
+        const latestDraft = readDraft(key);
+        if (latestDraft && sameForm(latestDraft, snapshot.form)) clearDraft(key);
+        setSyncStatus("saved");
+      } else {
+        setSyncStatus("pending");
+        void flushAutosaveRef.current();
+      }
+      return true;
+    }
+
+    setSyncStatus(configured && session && authorized ? "offline" : "local");
+    return false;
+  }, [authorized, configured, persistDay, session]);
+
+  useEffect(() => {
+    flushAutosaveRef.current = flushAutosave;
+  }, [flushAutosave]);
+
+  const queueAutosave = useCallback((nextForm: DayForm, dateKey: string, immediate = false) => {
+    const version = saveVersionRef.current + 1;
+    saveVersionRef.current = version;
+    latestSaveRef.current = { version, form: nextForm, date: dateKey };
+    setSyncStatus(configured && session && authorized ? "pending" : "local");
+    if (autosaveTimerRef.current !== null) window.clearTimeout(autosaveTimerRef.current);
+    if (immediate) {
+      void flushAutosave();
+    } else {
+      autosaveTimerRef.current = window.setTimeout(() => {
+        autosaveTimerRef.current = null;
+        void flushAutosave();
+      }, autosaveDelay);
+    }
+  }, [authorized, configured, flushAutosave, session]);
 
   useEffect(() => {
     if (!timerStartedAt) return;
@@ -558,6 +687,23 @@ export function LearningDashboard() {
     window.addEventListener("pagehide", saveSnapshot);
     return () => window.removeEventListener("pagehide", saveSnapshot);
   }, [eventCategory, eventTitle, session?.user.id, timerElapsedBeforePause, timerPlanId, timerRecordDate, timerSessionId, timerStartedAt]);
+
+  useEffect(() => {
+    const retry = () => {
+      if (latestSaveRef.current) void flushAutosave();
+    };
+    const flushOnHidden = () => {
+      if (document.visibilityState === "hidden" && latestSaveRef.current) void flushAutosave();
+    };
+    window.addEventListener("online", retry);
+    document.addEventListener("visibilitychange", flushOnHidden);
+    window.addEventListener("pagehide", retry);
+    return () => {
+      window.removeEventListener("online", retry);
+      document.removeEventListener("visibilitychange", flushOnHidden);
+      window.removeEventListener("pagehide", retry);
+    };
+  }, [flushAutosave]);
 
   useEffect(() => {
     if (!configured) {
@@ -660,8 +806,12 @@ export function LearningDashboard() {
 
     async function load() {
       setMessage("");
-      const initialDraft = readDraft(currentDraftKey);
-      setForm(initialDraft ?? blankForm());
+      const anonymousDraft = session?.user.id ? readDraft(draftKey(undefined, selectedDate)) : null;
+      const initialDraft = readDraft(currentDraftKey) ?? anonymousDraft;
+      if (anonymousDraft && session?.user.id && !readDraft(currentDraftKey)) writeDraft(currentDraftKey, anonymousDraft);
+      const initialForm = initialDraft ?? blankForm();
+      formRef.current = initialForm;
+      setForm(initialForm);
       setWeeklyRecords([]);
       setHistoryRecords([]);
       setPlans([]);
@@ -712,8 +862,9 @@ export function LearningDashboard() {
         setMessage("读取同步记录失败。请检查 Supabase 表结构、RLS 策略和网络连接。");
       } else {
         const latestDraft = readDraft(currentDraftKey);
-        if (latestDraft) setForm(latestDraft);
-        else if (today) setForm(formFromRecord(today as StoredDay));
+        const loadedForm = latestDraft ?? (today ? formFromRecord(today as StoredDay) : initialForm);
+        formRef.current = loadedForm;
+        setForm(loadedForm);
         setWeeklyRecords((week as StoredDay[] | null) ?? []);
         const records = (history as StoredDay[] | null) ?? [];
         setHistoryRecords(records);
@@ -735,12 +886,26 @@ export function LearningDashboard() {
     };
   }, [configured, currentDraftKey, selectedDate, session]);
 
-  function updateForm(update: (current: DayForm) => DayForm) {
-    setForm((current) => {
-      const next = update(current);
-      writeDraft(currentDraftKey, next);
-      return next;
-    });
+  useEffect(() => {
+    if (!configured || !session || !authorized) return;
+    const draft = readDraft(currentDraftKey);
+    if (draft) window.setTimeout(() => queueAutosave(draft, selectedDate), 0);
+  }, [authorized, configured, currentDraftKey, queueAutosave, selectedDate, session]);
+
+  function updateForm(update: (current: DayForm) => DayForm, immediate = false) {
+    const next = update(formRef.current);
+    formRef.current = next;
+    writeDraft(currentDraftKey, next);
+    setForm(next);
+    queueAutosave(next, selectedDate, immediate);
+  }
+
+  async function handleDateChange(nextDate: string) {
+    if (nextDate === selectedDate) return;
+    setDateChanging(true);
+    await flushAutosave();
+    setSelectedDate(nextDate);
+    setDateChanging(false);
   }
 
   function openPlanComposer(template: "general" | "ai_batch") {
@@ -922,7 +1087,7 @@ export function LearningDashboard() {
 
   function finishTimer() {
     if (!timerInProgress) return;
-    const elapsed = timerElapsedBeforePause + (timerStartedAt ? Date.now() - timerStartedAt : 0);
+    const elapsed = timerElapsedBeforePause + (timerStartedAt ? timerNow - timerStartedAt : 0);
     const minutes = Math.max(1, Math.round(elapsed / 60000));
     const title = eventTitle.trim();
     const planId = timerPlanId;
@@ -930,7 +1095,7 @@ export function LearningDashboard() {
     updateForm((current) => ({
       ...current,
       events: [...current.events, { id: eventId, title, category: eventCategory, minutes, ...(planId ? { planId } : {}) }],
-    }));
+    }), true);
     setTimerStartedAt(null);
     setTimerElapsedBeforePause(0);
     setTimerSessionId(null);
@@ -961,63 +1126,21 @@ export function LearningDashboard() {
     if (!client) return;
     await client.auth.signOut();
     clearDraft(currentDraftKey);
-    setForm(blankForm());
+    latestSaveRef.current = null;
+    const emptyForm = blankForm();
+    formRef.current = emptyForm;
+    setForm(emptyForm);
     setWeeklyRecords([]);
     setHistoryRecords([]);
     setPlans([]);
     setTimerPlanId(null);
+    setSyncStatus("local");
   }
 
   async function saveDay() {
-    setMessage("");
-    const client = getSupabase();
-    if (!client) {
-      setMessage("尚未配置同步。请先填写 .env.local 并重启应用。");
-      return;
-    }
-    if (!session) {
-      setMessage("请先使用自己的 GitHub 账号登录。");
-      return;
-    }
-    if (!authorized) {
-      setMessage("当前账号没有数据写入权限。请先完成允许名单配置。");
-      return;
-    }
-
-    setSaving(true);
-    const savedForm = form;
-    const savedDraftKey = currentDraftKey;
-    const minutes = eventMinutes(savedForm.events);
-    const { error } = await client.from("learning_days").upsert(
-      {
-        ...savedForm,
-        events: savedForm.events,
-        java_ai_minutes: minutes.java_ai,
-        platform_minutes: minutes.platform,
-        foundation_minutes: minutes.foundation,
-        user_id: session.user.id,
-        record_date: selectedDate,
-      },
-      { onConflict: "user_id,record_date" },
-    );
-
-    if (error) {
-      setMessage(`保存失败：${error.message}`);
-    } else {
-      const latestDraft = readDraft(savedDraftKey);
-      if (latestDraft && sameForm(latestDraft, savedForm)) clearDraft(savedDraftKey);
-      setMessage("已同步：今天的事件、证据和复盘都会进入历史档案。");
-      const [{ data: week }, { data: history }] = await Promise.all([
-        client.from("learning_days").select("*").gte("record_date", weekStartKey(selectedDate)).lte("record_date", selectedDate).order("record_date", { ascending: true }),
-        client.from("learning_days").select("*").order("record_date", { ascending: false }).range(0, historyPageSize - 1),
-      ]);
-      setWeeklyRecords((week as StoredDay[] | null) ?? []);
-      const records = (history as StoredDay[] | null) ?? [];
-      setHistoryRecords(records);
-      setHistoryHasMore(records.length === historyPageSize);
-      void refreshPlanEfforts();
-    }
-    setSaving(false);
+    queueAutosave(formRef.current, selectedDate);
+    const saved = await flushAutosave();
+    setMessage(saved ? "已立即同步今天的记录。" : "记录已保留在本地，网络恢复后会自动重试。");
   }
 
   async function loadMoreHistory() {
@@ -1064,9 +1187,9 @@ export function LearningDashboard() {
           </div>
         </div>
         <div className="account-area">
-          <div className="sync-pill">
-            <span className={`sync-dot ${configured && session && authorized ? "ok" : ""}`} />
-            {!configured ? "本地预览" : !session ? "等待登录" : authorized ? "已连接云端" : "等待授权"}
+          <div className={`sync-pill sync-status-${syncStatus}`}>
+            <span className={`sync-dot ${syncStatus === "saved" || (configured && session && authorized && syncStatus === "idle") ? "ok" : ""}`} />
+            {syncStatus === "idle" && configured && session && !authorized ? "等待授权" : syncStatusLabel[syncStatus]}
           </div>
           {!configured ? (
             <button className="button button-secondary" type="button" onClick={() => setMessage("请先按 README 创建 Supabase 项目并填写 .env.local。")}>
@@ -1101,7 +1224,7 @@ export function LearningDashboard() {
           <p>优先把自动化、监控、变更和复盘做成可展示成果，而不是只记录花了多少时间。</p>
           <div className="date-picker">
             <label htmlFor="record-date">正在记录</label>
-            <input id="record-date" type="date" value={selectedDate} disabled={timerInProgress} onChange={(event) => setSelectedDate(event.target.value)} />
+            <input id="record-date" type="date" value={selectedDate} disabled={timerInProgress || dateChanging} onChange={(event) => void handleDateChange(event.target.value)} />
             <span>{dateLabel(selectedDate)}</span>
           </div>
         </div>
@@ -1204,7 +1327,10 @@ export function LearningDashboard() {
               <h2 className="card-title">先记录事件，时间由计时器生成。</h2>
               <p className="card-caption">每条记录都要能回答：我做了什么、属于哪条能力主线、花了多久。</p>
             </div>
-            {loading && <span className="sync-pill">正在读取…</span>}
+            <div className="record-status-cluster">
+              {loading && <span className="sync-pill">正在读取…</span>}
+              {!loading && <span className={`record-sync-status ${syncStatus}`} role="status"><span className="status-mark" />{syncStatusLabel[syncStatus]}</span>}
+            </div>
           </div>
 
           {timerPlan && <div className="timer-plan-link"><div><span>本次投入已关联计划</span><strong>{timerPlan.title}</strong></div>{!timerInProgress && <button className="button-quiet" type="button" onClick={clearTimerPlan}>取消关联</button>}</div>}
@@ -1273,22 +1399,22 @@ export function LearningDashboard() {
 
           <div className="save-bar">
             <label className="checkbox"><input type="checkbox" checked={form.completed} onChange={(event) => updateForm((current) => ({ ...current, completed: event.target.checked }))} /> 今天形成了最小闭环</label>
-            <button className="button" type="button" disabled={saving} onClick={saveDay}>{saving ? "正在同步…" : "保存今日记录"}</button>
+            <button className="button" type="button" disabled={saving || dateChanging} onClick={saveDay}>{saving ? "正在同步…" : "立即同步"}</button>
           </div>
           {message && <p className="feedback" role="status">{message}</p>}
         </section>
 
         <aside className="side-stack">
           <section className="card project-card">
-            <div className="eyebrow">作品集主项目 · 讲人话版</div>
-            <h2 className="card-title">“AI 知识助手”到底是什么？</h2>
-            <p>它不是泛泛的聊天机器人。它是一个用公开资料或自建样例回答具体问题的服务，并且你能证明它<strong>答得如何、运行是否健康、出错后怎样恢复</strong>。</p>
+            <div className="eyebrow">作品集主项目 · 闲置贩子</div>
+            <h2 className="card-title">把一件闲置，变成一条能发布的商品</h2>
+            <p>它不是自动发帖工具，而是从一张照片开始，帮普通人补齐商品信息、写出可信文案，并给出带依据的挂牌建议。</p>
             <ol>
-              {assistantProjectSteps.map((step) => <li key={step}>{step}</li>)}
+              {primaryProjectSteps.map((step) => <li key={step}>{step}</li>)}
             </ol>
-            <div className="project-first-step"><strong>你现在只需要做第一步：</strong>创建仓库，写清它要回答的一个问题，再做出第一个可运行接口。</div>
+            <div className="project-first-step"><strong>第一版：</strong>先支持少量明确品类；用户补充品牌、型号、成色和配件后，再输出挂牌建议、文案草稿与待补照片清单。</div>
+            <div className="project-secondary-note"><strong>另一个方向：</strong>消费维权助手「要钱官」暂作为备选，先不和主项目争夺首页注意力。</div>
           </section>
-
           <section className="card allocation-card">
             <div className="card-head"><div><div className="eyebrow">本周投入</div><h2 className="card-title">能力配比不是三张填空题。</h2></div></div>
             <div className="allocation">
@@ -1325,7 +1451,7 @@ export function LearningDashboard() {
         {historyHasMore && <button className="button button-secondary load-more" type="button" disabled={historyLoading} onClick={loadMoreHistory}>{historyLoading ? "正在加载…" : "加载更早的记录"}</button>}
       </section>
 
-      <p className="footer-note">隐私边界：只记录公开或脱敏的信息。不要输入公司账号、密码、IP、网络拓扑、客户资料、内部日志或未脱敏配置。</p>
+      <p className="footer-note">隐私边界：项目只应使用公开或脱敏样例。不要上传账号密码、身份证/手机号、完整聊天记录、订单隐私、公司内部日志或其他可直接识别个人与组织的信息。</p>
     </main>
   );
 }
