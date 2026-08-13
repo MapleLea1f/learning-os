@@ -32,6 +32,7 @@ create table if not exists public.work_plans (
   target_date date not null,
   next_action text not null,
   details text not null default '',
+  github_repo text,
   status text not null default 'planned' check (status in ('planned', 'in_progress', 'blocked', 'completed')),
   scheduled_date date,
   created_at timestamptz not null default now(),
@@ -40,8 +41,25 @@ create table if not exists public.work_plans (
 
 -- Safe for existing installations: store the event title, category and timer
 -- result alongside the existing aggregate minute columns.
+alter table public.work_plans
+  add column if not exists github_repo text;
+
 alter table public.learning_days
   add column if not exists events jsonb not null default '[]'::jsonb;
+
+-- Phase 1: evidence is stored as a JSON array; old text values are migrated as one text item.
+alter table public.learning_days
+  add column if not exists evidence_json jsonb not null default '[]'::jsonb;
+
+alter table public.learning_days
+  add column if not exists plan_notes jsonb not null default '{}'::jsonb;
+
+update public.learning_days
+set evidence_json = case
+  when trim(evidence) = '' then '[]'::jsonb
+  else jsonb_build_array(jsonb_build_object('id', gen_random_uuid()::text, 'type', 'text', 'text', evidence, 'createdAt', now()::text))
+end
+where evidence_json = '[]'::jsonb and trim(evidence) <> '';
 
 create index if not exists learning_days_user_date_idx
   on public.learning_days (user_id, record_date desc);

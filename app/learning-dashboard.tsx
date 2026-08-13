@@ -1,10 +1,28 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+/* eslint-disable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
+
+import Link from "next/link";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import { getSupabase, isSupabaseConfigured } from "./supabase-client";
 
 type LearningCategory = "java_ai" | "platform" | "foundation";
+
+type EvidenceItem = {
+  id: string;
+  type: "text" | "link" | "github_commit";
+  text?: string;
+  title?: string;
+  url?: string;
+  repo?: string;
+  message?: string;
+  commitUrl?: string;
+  planId?: string;
+  createdAt: string;
+};
+
+type LeetCodeSubmission = { id: string; title: string; titleSlug: string; timestamp: string };
 
 type LearningEvent = {
   id: string;
@@ -12,6 +30,7 @@ type LearningEvent = {
   category: LearningCategory;
   minutes: number;
   planId?: string;
+  source?: "timer" | "manual" | "leetcode";
 };
 
 type PlanPriority = "high" | "medium" | "low";
@@ -25,20 +44,24 @@ type WorkPlan = {
   target_date: string;
   next_action: string;
   details: string;
+  github_repo: string | null;
   status: PlanStatus;
   scheduled_date: string | null;
   created_at: string;
   updated_at: string;
 };
 
-type PlanForm = Pick<WorkPlan, "title" | "priority" | "target_date" | "next_action" | "details" | "status">;
+type PlanForm = Pick<WorkPlan, "title" | "priority" | "target_date" | "next_action" | "details" | "github_repo" | "status">;
 
-type DayForm = {
-  top_goal: string;
-  events: LearningEvent[];
-  evidence: string;
+type PlanNote = {
   blocker: string;
   reflection: string;
+};
+
+type DayForm = {
+  events: LearningEvent[];
+  evidence: EvidenceItem[];
+  planNotes: Record<string, PlanNote>;
   completed: boolean;
 };
 
@@ -50,6 +73,8 @@ type StoredDay = DayForm & {
   platform_minutes?: number;
   foundation_minutes?: number;
   events?: unknown;
+  evidence_json?: unknown;
+  plan_notes?: unknown;
 };
 
 type PersistedTimer = {
@@ -77,7 +102,6 @@ type PlanEffort = {
   entries: PlanEffortEntry[];
 };
 
-const historyPageSize = 8;
 const activeTimerStorageKey = "learning-os:active-timer";
 const autosaveDelay = 1200;
 
@@ -155,11 +179,9 @@ function weekStartKey(dateKey: string) {
 
 function blankForm(): DayForm {
   return {
-    top_goal: "",
     events: [],
-    evidence: "",
-    blocker: "",
-    reflection: "",
+    evidence: [],
+    planNotes: {},
     completed: false,
   };
 }
@@ -171,6 +193,7 @@ function blankPlanForm(targetDate: string): PlanForm {
     target_date: targetDate,
     next_action: "",
     details: "",
+    github_repo: null,
     status: "planned",
   };
 }
@@ -180,7 +203,7 @@ function aiBatchPlanForm(targetDate: string): PlanForm {
     ...blankPlanForm(targetDate),
     title: "AI 批量化需求：",
     next_action: "先确认输入、输出与验收标准，再拆出第一批可验证样本。",
-    details: "批量对象：\n输入来源：\n预期输出：\n验收标准：\n风险与边界：\n",
+    details: "批量对象：\\n输入来源：\\n预期输出：\\n验收标准：\\n风险与边界：\\n",
   };
 }
 
@@ -199,15 +222,38 @@ function normalizeEvents(value: unknown): LearningEvent[] {
     if (!title || !isLearningCategory(event.category) || minutes < 1) return [];
 
     const planId = typeof event.planId === "string" && event.planId ? event.planId : undefined;
+    const source = event.source === "manual" || event.source === "leetcode" ? event.source : "timer";
     return [{
       id: typeof event.id === "string" && event.id ? event.id : `restored-${index}`,
       title,
       category: event.category,
       minutes,
+      source,
       ...(planId ? { planId } : {}),
     }];
   });
 }
+
+function normalizeEvidence(value: unknown): EvidenceItem[] {
+  if (Array.isArray(value)) {
+    return value.flatMap((item, index) => {
+      if (!item || typeof item !== "object") return [];
+      const raw = item as Record<string, unknown>;
+      const type = raw.type === "link" || raw.type === "github_commit" ? raw.type : "text";
+      const text = typeof raw.text === "string" ? raw.text.trim() : "";
+      const url = typeof raw.url === "string" ? raw.url.trim() : "";
+      const message = typeof raw.message === "string" ? raw.message.trim() : "";
+      if ((type === "text" && !text) || (type === "link" && !url) || (type === "github_commit" && !message)) return [];
+      return [{ id: typeof raw.id === "string" && raw.id ? raw.id : `evidence-${index}`, type, ...(text ? { text } : {}), ...(typeof raw.title === "string" && raw.title.trim() ? { title: raw.title.trim() } : {}), ...(url ? { url } : {}), ...(typeof raw.repo === "string" && raw.repo.trim() ? { repo: raw.repo.trim() } : {}), ...(message ? { message } : {}), ...(typeof raw.commitUrl === "string" && raw.commitUrl.trim() ? { commitUrl: raw.commitUrl.trim() } : {}), ...(typeof raw.planId === "string" && raw.planId ? { planId: raw.planId } : {}), createdAt: typeof raw.createdAt === "string" ? raw.createdAt : new Date().toISOString() }];
+    });
+  }
+  if (typeof value === "string" && value.trim()) {
+    try { return normalizeEvidence(JSON.parse(value)); } catch { return [{ id: createEvidenceId(), type: "text", text: value.trim(), createdAt: new Date().toISOString() }]; }
+  }
+  return [];
+}
+
+function createEvidenceId() { return globalThis.crypto?.randomUUID?.() ?? `evidence-${Date.now()}-${Math.random().toString(16).slice(2)}`; }
 
 function legacyEventsFromMinutes(minutes: Record<LearningCategory, number>): LearningEvent[] {
   return (Object.keys(categoryMeta) as LearningCategory[]).flatMap((category) => {
@@ -217,6 +263,7 @@ function legacyEventsFromMinutes(minutes: Record<LearningCategory, number>): Lea
       title: `${categoryMeta[category].label}（旧版累计）`,
       category,
       minutes: minutes[category],
+      source: "timer",
     }];
   });
 }
@@ -255,6 +302,14 @@ type MergedEvent = {
   planId?: string;
 };
 
+type EventEditDraft = {
+  id: string;
+  title: string;
+  category: LearningCategory;
+  minutes: string;
+  planId: string | null;
+};
+
 function mergeEventsForDisplay(events: LearningEvent[]): MergedEvent[] {
   const groups = new Map<string, MergedEvent>();
   for (const event of events) {
@@ -282,13 +337,23 @@ function mergeEventsForDisplay(events: LearningEvent[]): MergedEvent[] {
 
 function formFromRecord(record: StoredDay): DayForm {
   return {
-    top_goal: record.top_goal ?? "",
     events: eventsForRecord(record),
-    evidence: record.evidence ?? "",
-    blocker: record.blocker ?? "",
-    reflection: record.reflection ?? "",
+    evidence: normalizeEvidence(record.evidence_json ?? record.evidence),
+    planNotes: normalizePlanNotes(record.plan_notes),
     completed: record.completed ?? false,
   };
+}
+
+function normalizePlanNotes(value: unknown): Record<string, PlanNote> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.entries(value as Record<string, unknown>).reduce<Record<string, PlanNote>>((notes, [planId, raw]) => {
+    if (!raw || typeof raw !== "object") return notes;
+    const note = raw as Record<string, unknown>;
+    const blocker = typeof note.blocker === "string" ? note.blocker : "";
+    const reflection = typeof note.reflection === "string" ? note.reflection : "";
+    if (blocker || reflection) notes[planId] = { blocker, reflection };
+    return notes;
+  }, {});
 }
 
 function draftKey(userId: string | undefined, dateKey: string) {
@@ -300,11 +365,9 @@ function isDayForm(value: unknown): value is DayForm {
 
   const form = value as Record<string, unknown>;
   return (
-    typeof form.top_goal === "string" &&
     Array.isArray(form.events) && form.events.length === normalizeEvents(form.events).length &&
-    typeof form.evidence === "string" &&
-    typeof form.blocker === "string" &&
-    typeof form.reflection === "string" &&
+    Array.isArray(form.evidence) && form.evidence.length === normalizeEvidence(form.evidence).length &&
+    !!form.planNotes && typeof form.planNotes === "object" &&
     typeof form.completed === "boolean"
   );
 }
@@ -318,7 +381,7 @@ function isLegacyDayForm(value: unknown): value is Omit<DayForm, "events"> & Rec
     typeof form.java_ai_minutes === "number" && Number.isFinite(form.java_ai_minutes) &&
     typeof form.platform_minutes === "number" && Number.isFinite(form.platform_minutes) &&
     typeof form.foundation_minutes === "number" && Number.isFinite(form.foundation_minutes) &&
-    typeof form.evidence === "string" &&
+    (typeof form.evidence === "string" || Array.isArray(form.evidence)) &&
     typeof form.blocker === "string" &&
     typeof form.reflection === "string" &&
     typeof form.completed === "boolean"
@@ -334,15 +397,13 @@ function readDraft(key: string): DayForm | null {
     if (isDayForm(draft)) return { ...draft, events: normalizeEvents(draft.events) };
     if (isLegacyDayForm(draft)) {
       return {
-        top_goal: draft.top_goal,
         events: legacyEventsFromMinutes({
           java_ai: draft.java_ai_minutes,
           platform: draft.platform_minutes,
           foundation: draft.foundation_minutes,
         }),
-        evidence: draft.evidence,
-        blocker: draft.blocker,
-        reflection: draft.reflection,
+        evidence: normalizeEvidence(draft.evidence),
+        planNotes: {},
         completed: draft.completed,
       };
     }
@@ -379,11 +440,9 @@ function clearDraft(key: string) {
 
 function sameForm(left: DayForm, right: DayForm) {
   return (
-    left.top_goal === right.top_goal &&
     JSON.stringify(left.events) === JSON.stringify(right.events) &&
-    left.evidence === right.evidence &&
-    left.blocker === right.blocker &&
-    left.reflection === right.reflection &&
+    JSON.stringify(left.evidence) === JSON.stringify(right.evidence) &&
+    JSON.stringify(left.planNotes) === JSON.stringify(right.planNotes) &&
     left.completed === right.completed
   );
 }
@@ -475,18 +534,21 @@ function planEffortFromRecords(records: Array<Pick<StoredDay, "record_date" | "e
 }
 
 export function LearningDashboard() {
-  const [selectedDate, setSelectedDate] = useState(() => toDateKey(new Date()));
+  const [selectedDate, setSelectedDate] = useState(() => {
+    if (typeof window !== "undefined") {
+      const requestedDate = new URLSearchParams(window.location.search).get("date");
+      if (requestedDate && /^\d{4}-\d{2}-\d{2}$/.test(requestedDate)) return requestedDate;
+    }
+    return toDateKey(new Date());
+  });
   const [form, setForm] = useState<DayForm>(blankForm);
   const [session, setSession] = useState<Session | null>(null);
   const [authorized, setAuthorized] = useState(false);
   const [authorizationChecked, setAuthorizationChecked] = useState(false);
   const [weeklyRecords, setWeeklyRecords] = useState<StoredDay[]>([]);
-  const [historyRecords, setHistoryRecords] = useState<StoredDay[]>([]);
   const [plans, setPlans] = useState<WorkPlan[]>([]);
   const [planEfforts, setPlanEfforts] = useState<Record<string, PlanEffort>>({});
-  const [historyHasMore, setHistoryHasMore] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [historyLoading, setHistoryLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>("idle");
   const [dateChanging, setDateChanging] = useState(false);
@@ -503,8 +565,21 @@ export function LearningDashboard() {
   const [timerStartedAt, setTimerStartedAt] = useState<number | null>(null);
   const [timerElapsedBeforePause, setTimerElapsedBeforePause] = useState(0);
   const [timerNow, setTimerNow] = useState(0);
+  const [quickTitle, setQuickTitle] = useState("");
+  const [quickCategory, setQuickCategory] = useState<LearningCategory>("java_ai");
+  const [quickMinutes, setQuickMinutes] = useState("");
+  const [quickPlanId, setQuickPlanId] = useState<string | null>(null);
+  const [leetcodeUsername, setLeetcodeUsername] = useState("");
+  const [leetcodeSubmissions, setLeetcodeSubmissions] = useState<LeetCodeSubmission[]>([]);
+  const [leetcodeSelectedIds, setLeetcodeSelectedIds] = useState<string[]>([]);
+  const [leetcodePlanId, setLeetcodePlanId] = useState<string | null>(null);
+  const [leetcodeLoading, setLeetcodeLoading] = useState(false);
+  const [expandedPlanNoteIds, setExpandedPlanNoteIds] = useState<string[]>([]);
+  const [editingGroup, setEditingGroup] = useState<string[] | null>(null);
+  const [editDraft, setEditDraft] = useState<EventEditDraft[]>([]);
   const [pendingTimerRecovery, setPendingTimerRecovery] = useState<PersistedTimer | null>(() => typeof window === "undefined" ? null : readPersistedTimer());
   const recoveringTimerRef = useRef<string | null>(null);
+  const githubSyncKeyRef = useRef<string | null>(null);
   const formRef = useRef(form);
   const saveVersionRef = useRef(0);
   const latestSaveRef = useRef<{ version: number; form: DayForm; date: string } | null>(null);
@@ -514,6 +589,8 @@ export function LearningDashboard() {
   const flushAutosaveRef = useRef<() => Promise<boolean>>(() => Promise.resolve(false));
 
   const configured = isSupabaseConfigured;
+  const leetcodeStorageKey = "learning-os:leetcode-username";
+  const leetcodeCopy = {"summary":"同步今日 LeetCode.cn 已通过的提交（预览）","username":"LeetCode.cn 用户名","plan":"关联计划（可选）","none":"不关联计划","read":"读取今日提交","loading":"读取中…","pending":"待导入：","import":"导入选中项","defaultText":"默认 30 分钟，导入后可编辑","required":"请先填写 LeetCode.cn 用户名。","failed":"LeetCode 同步失败。","foundPrefix":"找到 ","foundSuffix":" 条今日已通过提交，请确认后再导入。","noneFound":"今天没有新的已通过提交。","importedPrefix":"已导入 ","importedSuffix":" 条 LeetCode 事件，默认 30 分钟，可继续编辑。","dot":"·"};
   const currentDraftKey = useMemo(
     () => draftKey(session?.user.id, selectedDate),
     [selectedDate, session?.user.id],
@@ -521,6 +598,7 @@ export function LearningDashboard() {
   const todayMinutes = useMemo(() => eventMinutes(form.events), [form.events]);
   const todayTotal = totalMinutes(form.events);
   const mergedEvents = useMemo(() => mergeEventsForDisplay(form.events), [form.events]);
+  const planReviewPlans = useMemo(() => plans.filter((plan) => form.events.some((event) => event.planId === plan.id) || form.evidence.some((item) => item.planId === plan.id) || form.planNotes[plan.id]), [form.events, form.evidence, form.planNotes, plans]);
   const weekMinutes = weeklyRecords.reduce((sum, record) => sum + totalMinutes(eventsForRecord(record)), 0);
   const completedDays = weeklyRecords.filter((record) => record.completed).length;
   const timerInProgress = timerSessionId !== null;
@@ -551,14 +629,8 @@ export function LearningDashboard() {
   const refreshSavedViews = useCallback(async (dateKey: string) => {
     const client = getSupabase();
     if (!client || !session || !authorized) return;
-    const [{ data: week }, { data: history }] = await Promise.all([
-      client.from("learning_days").select("*").gte("record_date", weekStartKey(dateKey)).lte("record_date", dateKey).order("record_date", { ascending: true }),
-      client.from("learning_days").select("*").order("record_date", { ascending: false }).range(0, historyPageSize - 1),
-    ]);
+    const { data: week } = await client.from("learning_days").select("*").gte("record_date", weekStartKey(dateKey)).lte("record_date", dateKey).order("record_date", { ascending: true });
     setWeeklyRecords((week as StoredDay[] | null) ?? []);
-    const records = (history as StoredDay[] | null) ?? [];
-    setHistoryRecords(records);
-    setHistoryHasMore(records.length === historyPageSize);
     void refreshPlanEfforts();
   }, [authorized, refreshPlanEfforts, session]);
 
@@ -571,6 +643,8 @@ export function LearningDashboard() {
       {
         ...savedForm,
         events: savedForm.events,
+        evidence_json: savedForm.evidence,
+        plan_notes: savedForm.planNotes,
         java_ai_minutes: minutes.java_ai,
         platform_minutes: minutes.platform,
         foundation_minutes: minutes.foundation,
@@ -706,6 +780,10 @@ export function LearningDashboard() {
   }, [flushAutosave]);
 
   useEffect(() => {
+    try { setLeetcodeUsername(window.localStorage.getItem(leetcodeStorageKey) ?? ""); } catch { /* local preference is optional */ }
+  }, []);
+
+  useEffect(() => {
     if (!configured) {
       return;
     }
@@ -725,6 +803,23 @@ export function LearningDashboard() {
   }, [configured]);
 
   useEffect(() => {
+    const key = "learning-os:github-evidence-import";
+    try {
+      const raw = window.localStorage.getItem(key);
+      if (!raw) return;
+      const payload = JSON.parse(raw) as { date?: string; items?: unknown };
+      if (!payload.date || payload.date !== selectedDate || !Array.isArray(payload.items)) return;
+      const items = normalizeEvidence(payload.items);
+      if (!items.length) return;
+      updateForm((current) => ({ ...current, evidence: [...current.evidence, ...items] }), true);
+      window.localStorage.removeItem(key);
+      setMessage(`已从 GitHub 导入 ${items.length} 条提交证据。`);
+    } catch {
+      // Ignore malformed cross-page import data.
+    }
+  }, [selectedDate]);
+
+  useEffect(() => {
     if (!pendingTimerRecovery || recoveringTimerRef.current === pendingTimerRecovery.id) return;
     if (configured && session && !authorizationChecked) return;
     if (pendingTimerRecovery.userId && session?.user.id && pendingTimerRecovery.userId !== session.user.id) return;
@@ -734,6 +829,7 @@ export function LearningDashboard() {
       title: pendingTimerRecovery.title,
       category: pendingTimerRecovery.category,
       minutes: Math.max(1, Math.round((pendingTimerRecovery.elapsedBeforePause + (pendingTimerRecovery.startedAt ? Date.now() - pendingTimerRecovery.startedAt : 0)) / 60000)),
+      source: "timer",
       ...(pendingTimerRecovery.planId ? { planId: pendingTimerRecovery.planId } : {}),
     };
     const recoveredDraftKey = draftKey(pendingTimerRecovery.userId ?? session?.user.id, pendingTimerRecovery.recordDate);
@@ -778,6 +874,7 @@ export function LearningDashboard() {
         {
           ...nextForm,
           events: nextForm.events,
+          evidence_json: nextForm.evidence,
           java_ai_minutes: minutes.java_ai,
           platform_minutes: minutes.platform,
           foundation_minutes: minutes.foundation,
@@ -813,10 +910,8 @@ export function LearningDashboard() {
       formRef.current = initialForm;
       setForm(initialForm);
       setWeeklyRecords([]);
-      setHistoryRecords([]);
-      setPlans([]);
+        setPlans([]);
       setPlanEfforts({});
-      setHistoryHasMore(false);
       setAuthorized(false);
       setAuthorizationChecked(false);
 
@@ -828,7 +923,6 @@ export function LearningDashboard() {
       if (!client) return;
 
       setLoading(true);
-      setHistoryLoading(true);
       const { data: access, error: accessError } = await client
         .from("allowed_users")
         .select("user_id")
@@ -840,7 +934,6 @@ export function LearningDashboard() {
       if (accessError || !access) {
         setMessage("此 GitHub 账号尚未获授权。请按 README 将你的 Supabase 用户 ID 写入允许名单。");
         setLoading(false);
-        setHistoryLoading(false);
         setAuthorizationChecked(true);
         return;
       }
@@ -848,17 +941,16 @@ export function LearningDashboard() {
       setAuthorized(true);
       setAuthorizationChecked(true);
       const startKey = weekStartKey(selectedDate);
-      const [{ data: today, error: todayError }, { data: week, error: weekError }, { data: history, error: historyError }, { data: planData, error: plansError }, { data: effortData }] = await Promise.all([
+      const [{ data: today, error: todayError }, { data: week, error: weekError }, { data: planData, error: plansError }, { data: effortData }] = await Promise.all([
         client.from("learning_days").select("*").eq("record_date", selectedDate).maybeSingle(),
         client.from("learning_days").select("*").gte("record_date", startKey).lte("record_date", selectedDate).order("record_date", { ascending: true }),
-        client.from("learning_days").select("*").order("record_date", { ascending: false }).range(0, historyPageSize - 1),
         client.from("work_plans").select("*").order("target_date", { ascending: true }).order("created_at", { ascending: false }),
         client.from("learning_days").select("record_date, events"),
       ]);
 
       if (cancelled) return;
 
-      if (todayError || weekError || historyError) {
+      if (todayError || weekError) {
         setMessage("读取同步记录失败。请检查 Supabase 表结构、RLS 策略和网络连接。");
       } else {
         const latestDraft = readDraft(currentDraftKey);
@@ -866,9 +958,6 @@ export function LearningDashboard() {
         formRef.current = loadedForm;
         setForm(loadedForm);
         setWeeklyRecords((week as StoredDay[] | null) ?? []);
-        const records = (history as StoredDay[] | null) ?? [];
-        setHistoryRecords(records);
-        setHistoryHasMore(records.length === historyPageSize);
         if (plansError) {
           setMessage("计划库尚未初始化。请在 Supabase 执行更新后的 schema.sql 后重新加载。");
         } else {
@@ -877,7 +966,6 @@ export function LearningDashboard() {
         setPlanEfforts(planEffortFromRecords((effortData as Array<Pick<StoredDay, "record_date" | "events">> | null) ?? []));
       }
       setLoading(false);
-      setHistoryLoading(false);
     }
 
     load();
@@ -900,9 +988,43 @@ export function LearningDashboard() {
     queueAutosave(next, selectedDate, immediate);
   }
 
+  async function syncGithubEvidenceForPlans(dateKey: string, linkedPlans: WorkPlan[]) {
+    const token = session?.provider_token;
+    if (!token) return;
+    const candidates = linkedPlans.filter((plan) => plan.github_repo && /^[^\s/]+\/[^\s/]+$/.test(plan.github_repo));
+    if (!candidates.length) return;
+    const [year, month, day] = dateKey.split("-").map(Number);
+    const since = new Date(Date.UTC(year, month - 1, day)).toISOString();
+    const until = new Date(Date.UTC(year, month - 1, day + 1)).toISOString();
+    const headers = { Accept: "application/vnd.github+json", Authorization: "Bearer " + token, "X-GitHub-Api-Version": "2022-11-28" };
+    const results = await Promise.all(candidates.map(async (plan) => {
+      const response = await fetch("https://api.github.com/repos/" + plan.github_repo + "/commits?since=" + encodeURIComponent(since) + "&until=" + encodeURIComponent(until) + "&per_page=100", { headers });
+      if (!response.ok) return [];
+      const commits = await response.json() as Array<{ sha: string; html_url: string; commit?: { message?: string; author?: { date?: string | null } | null } }>;
+      return commits.map((commit) => ({ id: "github-" + commit.sha + "-" + plan.id, type: "github_commit" as const, repo: plan.github_repo ?? "", message: commit.commit?.message ?? "", title: (commit.commit?.message ?? "").split("\n")[0], commitUrl: commit.html_url, planId: plan.id, createdAt: commit.commit?.author?.date ?? new Date().toISOString() }));
+    }));
+    const imported = results.flat().filter((item) => item.message.trim());
+    if (!imported.length) return;
+    const existing = new Set(formRef.current.evidence.map((item) => item.id));
+    const fresh = imported.filter((item) => !existing.has(item.id));
+    if (fresh.length) updateForm((current) => ({ ...current, evidence: [...current.evidence, ...fresh] }), true);
+  }
+
+  useEffect(() => {
+    if (!authorized || !session?.provider_token || !plans.length) return;
+    const linkedPlans = plans.filter((plan) => plan.github_repo);
+    const key = selectedDate + ":" + linkedPlans.map((plan) => plan.id + "=" + plan.github_repo).join(",");
+    if (!linkedPlans.length || githubSyncKeyRef.current === key) return;
+    githubSyncKeyRef.current = key;
+    void syncGithubEvidenceForPlans(selectedDate, linkedPlans);
+  }, [authorized, plans, selectedDate, session]);
+
   async function handleDateChange(nextDate: string) {
     if (nextDate === selectedDate) return;
     setDateChanging(true);
+    setEditingGroup(null);
+    setEditDraft([]);
+    setExpandedPlanNoteIds([]);
     await flushAutosave();
     setSelectedDate(nextDate);
     setDateChanging(false);
@@ -922,6 +1044,7 @@ export function LearningDashboard() {
       target_date: plan.target_date,
       next_action: plan.next_action,
       details: plan.details,
+      github_repo: plan.github_repo ?? null,
       status: plan.status,
     });
     setPlanComposerOpen(true);
@@ -990,6 +1113,7 @@ export function LearningDashboard() {
       target_date: planForm.target_date,
       next_action: nextAction,
       details: planForm.details.trim(),
+      github_repo: planForm.github_repo?.trim() || null,
       status: planForm.status,
       updated_at: new Date().toISOString(),
     };
@@ -1094,7 +1218,7 @@ export function LearningDashboard() {
     const eventId = timerSessionId ?? createEventId();
     updateForm((current) => ({
       ...current,
-      events: [...current.events, { id: eventId, title, category: eventCategory, minutes, ...(planId ? { planId } : {}) }],
+      events: [...current.events, { id: eventId, title, category: eventCategory, minutes, source: "timer", ...(planId ? { planId } : {}) }],
     }), true);
     setTimerStartedAt(null);
     setTimerElapsedBeforePause(0);
@@ -1109,6 +1233,108 @@ export function LearningDashboard() {
   function removeEvents(ids: string[]) {
     const removed = new Set(ids);
     updateForm((current) => ({ ...current, events: current.events.filter((event) => !removed.has(event.id)) }));
+  }
+
+  async function syncLeetCode() {
+    const username = leetcodeUsername.trim();
+    if (!username) { setMessage(leetcodeCopy.required); return; }
+    setLeetcodeLoading(true);
+    try {
+      window.localStorage.setItem(leetcodeStorageKey, username);
+      const response = await fetch("/api/leetcode/submissions?username=" + encodeURIComponent(username) + "&date=" + selectedDate);
+      const payload = await response.json() as { submissions?: LeetCodeSubmission[]; error?: string };
+      if (!response.ok) throw new Error(payload.error ?? leetcodeCopy.failed);
+      const existingIds = new Set(formRef.current.events.filter((event) => event.source === "leetcode").map((event) => event.id));
+      const fresh = (payload.submissions ?? []).filter((item) => !existingIds.has("leetcode-" + item.id));
+      setLeetcodeSubmissions(fresh);
+      setLeetcodeSelectedIds(fresh.map((item) => item.id));
+      setMessage(fresh.length ? leetcodeCopy.foundPrefix + fresh.length + leetcodeCopy.foundSuffix : leetcodeCopy.noneFound);
+    } catch (error) { setMessage(error instanceof Error ? error.message : leetcodeCopy.failed); }
+    setLeetcodeLoading(false);
+  }
+
+  function importLeetCode() {
+    const selected = leetcodeSubmissions.filter((item) => leetcodeSelectedIds.includes(item.id));
+    if (!selected.length) return;
+    const existingIds = new Set(formRef.current.events.map((event) => event.id));
+    const events = selected.filter((item) => !existingIds.has("leetcode-" + item.id)).map((item) => ({ id: "leetcode-" + item.id, title: "LeetCode " + leetcodeCopy.dot + " " + item.title, category: "foundation" as LearningCategory, minutes: 30, source: "leetcode" as const, ...(leetcodePlanId ? { planId: leetcodePlanId } : {}) }));
+    if (!events.length) return;
+    updateForm((current) => ({ ...current, events: [...current.events, ...events] }), true);
+    setLeetcodeSubmissions([]); setLeetcodeSelectedIds([]); setMessage(leetcodeCopy.importedPrefix + events.length + leetcodeCopy.importedSuffix);
+  }
+
+  function addQuickEvent() {
+    const title = quickTitle.trim();
+    const minutes = Math.round(Number(quickMinutes));
+    if (!title) {
+      setMessage("先写下这次行动的名称，再快速登记。");
+      return;
+    }
+    if (!Number.isFinite(minutes) || minutes < 1) {
+      setMessage("时长需要是大于 0 的整数分钟。");
+      return;
+    }
+    const event: LearningEvent = {
+      id: createEventId(),
+      title,
+      category: quickCategory,
+      minutes,
+      source: "manual",
+      ...(quickPlanId ? { planId: quickPlanId } : {}),
+    };
+    updateForm((current) => ({ ...current, events: [...current.events, event] }), true);
+    setQuickTitle("");
+    setQuickMinutes("");
+    setQuickPlanId(null);
+    setMessage(`已手动登记「${title}」：${formatMinutes(minutes)}。`);
+  }
+
+  function openEventEditor(group: MergedEvent) {
+    setEditingGroup(group.ids);
+    setEditDraft(form.events
+      .filter((event) => group.ids.includes(event.id))
+      .map((event) => ({
+        id: event.id,
+        title: event.title,
+        category: event.category,
+        minutes: String(event.minutes),
+        planId: event.planId ?? null,
+      })));
+  }
+
+  function updateEventDraft(id: string, patch: Partial<EventEditDraft>) {
+    setEditDraft((current) => current.map((entry) => entry.id === id ? { ...entry, ...patch } : entry));
+  }
+
+  function saveEventEdits() {
+    const draftById = new Map(editDraft.map((entry) => [entry.id, entry]));
+    let invalid = false;
+    const nextEvents = form.events.map((event) => {
+      const draft = draftById.get(event.id);
+      if (!draft) return event;
+      const title = draft.title.trim();
+      const minutes = Math.round(Number(draft.minutes));
+      if (!title || !isLearningCategory(draft.category) || !Number.isFinite(minutes) || minutes < 1) {
+        invalid = true;
+        return event;
+      }
+      return {
+        id: event.id,
+        title,
+        category: draft.category,
+        minutes,
+        source: event.source,
+        ...(draft.planId ? { planId: draft.planId } : {}),
+      };
+    });
+    if (invalid) {
+      setMessage("编辑未保存：名称不能为空，时长需为大于 0 的整数。");
+      return;
+    }
+    updateForm((current) => ({ ...current, events: nextEvents }), true);
+    setEditingGroup(null);
+    setEditDraft([]);
+    setMessage("事件已更新。");
   }
 
   async function signIn() {
@@ -1131,7 +1357,6 @@ export function LearningDashboard() {
     formRef.current = emptyForm;
     setForm(emptyForm);
     setWeeklyRecords([]);
-    setHistoryRecords([]);
     setPlans([]);
     setTimerPlanId(null);
     setSyncStatus("local");
@@ -1143,27 +1368,6 @@ export function LearningDashboard() {
     setMessage(saved ? "已立即同步今天的记录。" : "记录已保留在本地，网络恢复后会自动重试。");
   }
 
-  async function loadMoreHistory() {
-    const client = getSupabase();
-    if (!client || !session || !authorized || historyLoading || !historyHasMore) return;
-
-    setHistoryLoading(true);
-    const start = historyRecords.length;
-    const { data, error } = await client
-      .from("learning_days")
-      .select("*")
-      .order("record_date", { ascending: false })
-      .range(start, start + historyPageSize - 1);
-
-    if (error) {
-      setMessage("加载更早的历史记录失败，请稍后重试。");
-    } else {
-      const records = (data as StoredDay[] | null) ?? [];
-      setHistoryRecords((current) => [...current, ...records.filter((record) => !current.some((item) => item.id === record.id))]);
-      setHistoryHasMore(records.length === historyPageSize);
-    }
-    setHistoryLoading(false);
-  }
 
   function renderPlanEffort(planId: string) {
     const effort = planEfforts[planId];
@@ -1187,6 +1391,7 @@ export function LearningDashboard() {
           </div>
         </div>
         <div className="account-area">
+          <Link className="button button-secondary" href={`/history?date=${selectedDate}`}>历史档案</Link>
           <div className={`sync-pill sync-status-${syncStatus}`}>
             <span className={`sync-dot ${syncStatus === "saved" || (configured && session && authorized && syncStatus === "idle") ? "ok" : ""}`} />
             {syncStatus === "idle" && configured && session && !authorized ? "等待授权" : syncStatusLabel[syncStatus]}
@@ -1270,6 +1475,7 @@ export function LearningDashboard() {
                   <label><span>状态</span><select value={planForm.status} onChange={(event) => setPlanForm((current) => ({ ...current, status: event.target.value as PlanStatus }))}>{(Object.keys(planStatusMeta) as PlanStatus[]).map((status) => <option key={status} value={status}>{planStatusMeta[status]}</option>)}</select></label>
                   <label className="plan-wide-field"><span>下一步</span><input value={planForm.next_action} placeholder="例如：先拿到一小批脱敏样本并确认输出格式" onChange={(event) => setPlanForm((current) => ({ ...current, next_action: event.target.value }))} /></label>
                   <label className="plan-wide-field"><span>需求说明（可选）</span><textarea value={planForm.details} placeholder="记录背景、范围、验收标准、风险或依赖；不要填写敏感信息。" onChange={(event) => setPlanForm((current) => ({ ...current, details: event.target.value }))} /></label>
+                  <label className="plan-wide-field"><span>GitHub repo (optional)</span><input value={planForm.github_repo ?? ""} placeholder="owner/repository; auto-import today's public commits" onChange={(event) => setPlanForm((current) => ({ ...current, github_repo: event.target.value || null }))} /></label>
                 </div>
                 <div className="plan-composer-actions">
                   <button className="button button-secondary" type="button" onClick={() => { setPlanComposerOpen(false); setEditingPlanId(null); }}>取消</button>
@@ -1342,7 +1548,7 @@ export function LearningDashboard() {
             </label>
             <label>
               <span>能力主线</span>
-              <select value={eventCategory} disabled={timerInProgress} onChange={(event) => setEventCategory(event.target.value as LearningCategory)}>
+              <select value={eventCategory} onChange={(event) => setEventCategory(event.target.value as LearningCategory)}>
                 {(Object.keys(categoryMeta) as LearningCategory[]).map((category) => <option value={category} key={category}>{categoryMeta[category].label}</option>)}
               </select>
             </label>
@@ -1366,6 +1572,23 @@ export function LearningDashboard() {
             )}
           </div>
 
+          <details className="quick-add-panel leetcode-sync-panel">
+            <summary>{leetcodeCopy.summary}</summary>
+            <div className="leetcode-sync-grid"><label><span>{leetcodeCopy.username}</span><input value={leetcodeUsername} placeholder="your-slug" onChange={(event) => setLeetcodeUsername(event.target.value)} /></label><label><span>{leetcodeCopy.plan}</span><select value={leetcodePlanId ?? ""} onChange={(event) => setLeetcodePlanId(event.target.value || null)}><option value="">{leetcodeCopy.none}</option>{plans.filter((plan) => plan.status !== "completed").map((plan) => <option key={plan.id} value={plan.id}>{plan.title}</option>)}</select></label><button className="button button-secondary" type="button" disabled={leetcodeLoading} onClick={() => void syncLeetCode()}>{leetcodeLoading ? leetcodeCopy.loading : leetcodeCopy.read}</button></div>
+            {leetcodeSubmissions.length > 0 && <div className="leetcode-preview"><div className="evidence-editor-head"><span>{leetcodeCopy.pending} {leetcodeSubmissions.length}</span><button className="button" type="button" onClick={importLeetCode}>{leetcodeCopy.import}</button></div>{leetcodeSubmissions.map((item) => <label className="leetcode-item" key={item.id}><input type="checkbox" checked={leetcodeSelectedIds.includes(item.id)} onChange={() => setLeetcodeSelectedIds((current) => current.includes(item.id) ? current.filter((id) => id !== item.id) : [...current, item.id])} /><span><strong>{item.title}</strong><small>{new Date(Number(item.timestamp) * 1000).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })} {leetcodeCopy.dot} {leetcodeCopy.defaultText}</small></span></label>)}</div>}
+          </details>
+
+          <details className="quick-add-panel">
+            <summary>快速登记（手动补一条事件，不计时）</summary>
+            <div className="quick-add-grid">
+              <label><span>做了什么？</span><input value={quickTitle} placeholder="例如：刷了 3 道 LeetCode 数组题" onChange={(event) => setQuickTitle(event.target.value)} /></label>
+              <label><span>能力主线</span><select value={quickCategory} onChange={(event) => setQuickCategory(event.target.value as LearningCategory)}>{(Object.keys(categoryMeta) as LearningCategory[]).map((category) => <option key={category} value={category}>{categoryMeta[category].label}</option>)}</select></label>
+              <label><span>时长（分钟）</span><input type="number" min={1} value={quickMinutes} placeholder="例如：30" onChange={(event) => setQuickMinutes(event.target.value)} /></label>
+              <label><span>关联计划（可选）</span><select value={quickPlanId ?? ""} onChange={(event) => setQuickPlanId(event.target.value || null)}><option value="">不关联</option>{plans.filter((plan) => plan.status !== "completed").map((plan) => <option key={plan.id} value={plan.id}>{plan.title}</option>)}</select></label>
+              <button className="button" type="button" onClick={addQuickEvent}>添加事件</button>
+            </div>
+          </details>
+
           <div className="today-summary">
             <div><span>今日已沉淀</span><strong>{formatMinutes(todayTotal)}</strong></div>
             <p>{mergedEvents.length ? `共 ${mergedEvents.length} 条可复盘事件` : "完成一次具体行动后，记录会出现在这里。"}</p>
@@ -1374,26 +1597,75 @@ export function LearningDashboard() {
           <div className="event-list" aria-live="polite">
             {mergedEvents.length ? mergedEvents.map((event) => {
               const linkedPlan = event.planId ? plans.find((plan) => plan.id === event.planId) : null;
-              return <article className="event-row" key={event.key}>
-                <span className={`event-dot ${event.category}`} />
-                <div><strong>{event.title}</strong><span>{categoryMeta[event.category].label}{event.count > 1 ? ` · ${event.count} 次` : ""}{linkedPlan ? ` · 关联计划：${linkedPlan.title}` : ""}</span></div>
-                <time>{formatMinutes(event.minutes)}</time>
-                <button className="button-quiet" type="button" onClick={() => removeEvents(event.ids)} aria-label={`删除事件：${event.title}`}>删除</button>
-              </article>;
+              const singleSource = event.ids.length === 1 ? form.events.find((item) => item.id === event.ids[0])?.source : undefined;
+              const editing = editingGroup !== null && event.ids.length === editingGroup.length && event.ids.every((id) => editingGroup.includes(id));
+              return (
+                <Fragment key={event.key}>
+                  <article className={`event-row${editing ? " editing" : ""}`}>
+                    <span className={`event-dot ${event.category}`} />
+                    <div><strong>{event.title}</strong><span>{categoryMeta[event.category].label}{event.count > 1 ? ` · ${event.count} 次` : ""}{linkedPlan ? ` · 关联计划：${linkedPlan.title}` : ""}{singleSource === "manual" ? " · 手动补记" : singleSource === "leetcode" ? " · LeetCode 同步" : ""}</span></div>
+                    <time>{formatMinutes(event.minutes)}</time>
+                    <div className="event-row-actions">
+                      <button className="button-quiet event-row-action edit" type="button" onClick={() => openEventEditor(event)} aria-label={`编辑事件：${event.title}`}>✎ 编辑</button>
+                      <button className="button-quiet event-row-action delete" type="button" onClick={() => removeEvents(event.ids)} aria-label={`删除事件：${event.title}`}>🗑 删除</button>
+                    </div>
+                  </article>
+                  {editing && (
+                    <div className="event-edit-panel">
+                      <div className="event-edit-head"><strong>编辑事件</strong><span>{editDraft.length} 条记录</span></div>
+                      {editDraft.map((entry) => (
+                        <div className="event-edit-row" key={entry.id}>
+                          <label className="event-edit-field"><span>事件名称</span><input value={entry.title} placeholder="事件名称" onChange={(event) => updateEventDraft(entry.id, { title: event.target.value })} /></label>
+                          <label className="event-edit-field"><span>能力主线</span><select value={entry.category} onChange={(event) => updateEventDraft(entry.id, { category: event.target.value as LearningCategory })}>{(Object.keys(categoryMeta) as LearningCategory[]).map((category) => <option key={category} value={category}>{categoryMeta[category].label}</option>)}</select></label>
+                          <label className="event-edit-field"><span>时长（分钟）</span><input type="number" min={1} value={entry.minutes} onChange={(event) => updateEventDraft(entry.id, { minutes: event.target.value })} /></label>
+                          <label className="event-edit-field"><span>关联计划</span><select value={entry.planId ?? ""} onChange={(event) => updateEventDraft(entry.id, { planId: event.target.value || null })}><option value="">不关联计划</option>{plans.map((plan) => <option key={plan.id} value={plan.id}>{plan.title}</option>)}</select></label>
+                        </div>
+                      ))}
+                      <div className="event-edit-actions">
+                        <button className="button-quiet" type="button" onClick={() => { setEditingGroup(null); setEditDraft([]); }}>取消</button>
+                        <button className="button" type="button" onClick={saveEventEdits}>保存修改</button>
+                      </div>
+                    </div>
+                  )}
+                </Fragment>
+              );
             }) : <p className="empty-state">还没有事件。选择一件 20 分钟内可完成的小事，点击“开始计时”。</p>}
           </div>
 
-          <label className="goal-field">
-            <span>今天最重要的一件事</span>
-            <input value={form.top_goal} placeholder="例如：完成巡检汇总脚本的第一个可运行版本" onChange={(event) => updateForm((current) => ({ ...current, top_goal: event.target.value }))} />
-          </label>
-
-          <details className="notes-panel">
-            <summary>补充证据、卡点与明日第一步（可选）</summary>
+          <details className="notes-panel" open>
+            <summary>按计划记录证据、卡点与明日第一步</summary>
             <div className="notes-grid">
-              <label><span>留下的证据</span><textarea value={form.evidence} placeholder="提交、脚本输出、实验结果或脱敏的问题记录。" onChange={(event) => updateForm((current) => ({ ...current, evidence: event.target.value }))} /></label>
-              <label><span>卡点 / 待解决问题</span><textarea value={form.blocker} placeholder="写具体症状，例如：异常输入没有被正确记录。" onChange={(event) => updateForm((current) => ({ ...current, blocker: event.target.value }))} /></label>
-              <label><span>复盘与明日第一步</span><textarea value={form.reflection} placeholder="例如：明天先补 3 组异常样例，再检查日志。" onChange={(event) => updateForm((current) => ({ ...current, reflection: event.target.value }))} /></label>
+              <div className="evidence-editor">
+                <div className="evidence-editor-head"><span>计划证据</span><button className="button-quiet" type="button" onClick={() => updateForm((current) => ({ ...current, evidence: [...current.evidence, { id: createEvidenceId(), type: "text", text: "", createdAt: new Date().toISOString() }] }))}>+ 添加证据</button></div>
+                {form.evidence.map((item, index) => <div className="evidence-item" key={item.id}>
+                  <select value={item.planId ?? ""} onChange={(event) => updateForm((current) => ({ ...current, evidence: current.evidence.map((entry, entryIndex) => entryIndex === index ? { ...entry, planId: event.target.value || undefined } : entry) }))}>
+                    <option value="">选择关联计划</option>{plans.map((plan) => <option key={plan.id} value={plan.id}>{plan.title}</option>)}
+                  </select>
+                  <textarea value={item.text ?? item.message ?? item.url ?? ""} placeholder={item.type === "github_commit" ? "GitHub 提交信息" : "提交、脚本输出、实验结果或文档链接"} readOnly={item.type === "github_commit"} onChange={(event) => updateForm((current) => ({ ...current, evidence: current.evidence.map((entry, entryIndex) => entryIndex === index ? { ...entry, text: event.target.value } : entry) }))} />
+                  <div className="evidence-item-meta"><span>{item.type === "github_commit" ? "GitHub · " + (item.repo ?? "") : item.type === "link" ? "链接" : "文字"}</span><button className="button-quiet" type="button" onClick={() => updateForm((current) => ({ ...current, evidence: current.evidence.filter((_, entryIndex) => entryIndex !== index) }))}>删除</button></div>
+                </div>)}
+                {!form.evidence.length && <p className="empty-state">还没有证据。先选择计划、再添加提交、文档或结果。</p>}
+                <a className="evidence-github-link" href={"/github?date=" + selectedDate}>打开 GitHub 证据页 →</a>
+              </div>
+              <div className="plan-notes-list">
+                <div className="evidence-editor-head"><div><span>计划复盘</span><small>只显示今天有关联投入的计划</small></div><div className="plan-notes-toolbar">{planReviewPlans.length > 1 && <><button className="button-quiet" type="button" onClick={() => setExpandedPlanNoteIds(planReviewPlans.map((plan) => plan.id))}>全部展开</button><button className="button-quiet" type="button" onClick={() => setExpandedPlanNoteIds([])}>全部收起</button></>}</div></div>
+                {planReviewPlans.map((plan) => {
+                  const note = form.planNotes[plan.id] ?? { blocker: "", reflection: "" };
+                  const minutes = form.events.filter((event) => event.planId === plan.id).reduce((total, event) => total + event.minutes, 0);
+                  const evidenceCount = form.evidence.filter((item) => item.planId === plan.id).length;
+                  const expanded = expandedPlanNoteIds.includes(plan.id);
+                  const hasBlocker = Boolean(note.blocker.trim());
+                  const hasReflection = Boolean(note.reflection.trim());
+                  return <article className={`plan-note-card${expanded ? " expanded" : ""}`} key={plan.id}>
+                    <button className="plan-note-summary" type="button" onClick={() => setExpandedPlanNoteIds((current) => current.includes(plan.id) ? current.filter((id) => id !== plan.id) : [...current, plan.id])}>
+                      <span className="plan-note-summary-copy"><strong>{plan.title}</strong><span>{minutes} 分钟 · {evidenceCount} 条证据</span></span>
+                      <span className="plan-note-summary-meta">{evidenceCount > 0 && <em>有证据</em>}{hasBlocker && <em>有卡点</em>}{hasReflection && <em>有下一步</em>}<b>{expanded ? "收起" : hasBlocker || hasReflection ? "编辑复盘" : "添加复盘"}</b></span>
+                    </button>
+                    {expanded && <div className="plan-note-editor"><label><span>卡点 / 待解决问题</span><textarea value={note.blocker} placeholder="没有卡点可留空" onChange={(event) => updateForm((current) => ({ ...current, planNotes: { ...current.planNotes, [plan.id]: { ...note, blocker: event.target.value } } }))} /></label><label><span>明日第一步</span><textarea value={note.reflection} placeholder="例如：先补 3 组异常样例" onBlur={() => { const nextAction = note.reflection.trim(); if (nextAction && nextAction !== plan.next_action.trim()) void updateExistingPlan(plan, { next_action: nextAction }); }} onChange={(event) => updateForm((current) => ({ ...current, planNotes: { ...current.planNotes, [plan.id]: { ...note, reflection: event.target.value } } }))} /></label></div>}
+                  </article>;
+                })}
+                {!planReviewPlans.length && <p className="empty-state">先把投入或证据关联到计划。这里会出现对应的复盘卡片</p>}
+              </div>
             </div>
           </details>
 
@@ -1432,24 +1704,6 @@ export function LearningDashboard() {
         </aside>
       </section>
 
-      <section className="card archive-card">
-        <div className="card-head">
-          <div><div className="eyebrow">历史档案</div><h2 className="card-title">不止最近 7 天：每次保存都是以后能翻出来的证据。</h2><p className="card-caption">按日期倒序加载。旧版只有时长的数据会以“旧版累计”保留，不会丢失。</p></div>
-          <span className="archive-count">已显示 {historyRecords.length} 天</span>
-        </div>
-        <div className="history-list">
-          {historyRecords.length ? historyRecords.map((record) => {
-            const events = eventsForRecord(record);
-            const mergedEvents = mergeEventsForDisplay(events);
-            return <article className="history-row" key={record.id}>
-              <button className="history-date" type="button" onClick={() => setSelectedDate(record.record_date)}><strong>{dateLabel(record.record_date)}</strong><span>{record.record_date}</span></button>
-              <div className="history-main"><strong>{record.top_goal || "未填写主目标"}</strong><div className="history-events">{events.length ? mergedEvents.map((event) => <span key={event.key}>{event.title}{event.count > 1 ? ` ×${event.count}` : ""} · {event.minutes}m</span>) : <span>未记录具体事件</span>}</div></div>
-              <div className="history-total"><strong>{formatMinutes(totalMinutes(events))}</strong><span>{record.completed ? "已闭环" : "进行中"}</span></div>
-            </article>;
-          }) : <p className="empty-state">{configured && session ? "还没有已同步的历史记录。保存今天的事件后，它会出现在这里。" : "登录并保存记录后，可以在这里查看全部历史。"}</p>}
-        </div>
-        {historyHasMore && <button className="button button-secondary load-more" type="button" disabled={historyLoading} onClick={loadMoreHistory}>{historyLoading ? "正在加载…" : "加载更早的记录"}</button>}
-      </section>
 
       <p className="footer-note">隐私边界：项目只应使用公开或脱敏样例。不要上传账号密码、身份证/手机号、完整聊天记录、订单隐私、公司内部日志或其他可直接识别个人与组织的信息。</p>
     </main>

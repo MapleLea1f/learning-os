@@ -282,3 +282,132 @@ h1 { max-width: 700px; position: relative; z-index: 1; margin: 0; color: #193e2d
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
 }
+
+/* Phase 0: 快速登记与事件编辑 */
+.event-row.editing { border-radius: 10px; background: rgba(115, 181, 148, .09); }
+.event-row-actions { display: inline-flex; align-items: center; gap: 2px; border: 1px solid #e2eae3; border-radius: 9px; padding: 2px; background: #f6faf6; }
+.event-row-actions .button-quiet { display: inline-flex; align-items: center; gap: 4px; padding: 4px 8px; border-radius: 7px; line-height: 1.4; }
+.event-row-actions .event-row-action.edit:hover { color: #2f6b4a; background: #e4f1e7; }
+.event-row-actions .event-row-action.delete:hover { color: #bd5b4b; background: #fbece8; }
+.quick-add-panel { margin-top: 12px; border: 1px dashed #d4e1d6; border-radius: 12px; padding: 12px 14px; background: #fbfdfb; }
+.quick-add-panel summary { color: #4f695b; cursor: pointer; font-size: 12px; font-weight: 700; }
+.quick-add-grid { display: grid; grid-template-columns: minmax(0, 1fr) 170px 110px minmax(0, 1fr) auto; gap: 10px; align-items: end; margin-top: 11px; }
+.quick-add-grid label { display: block; }
+.quick-add-grid label span { display: block; margin: 0 0 7px; color: #5e7065; font-size: 12px; }
+.quick-add-grid input, .quick-add-grid select { width: 100%; border: 1px solid #d4e1d6; border-radius: 10px; padding: 10px 11px; color: #233b2e; outline: 0; background: #fffefa; }
+.quick-add-grid input:focus, .quick-add-grid select:focus { border-color: #73b594; box-shadow: 0 0 0 3px rgba(115, 181, 148, .14); }
+.quick-add-grid .button { white-space: nowrap; }
+.event-edit-panel { display: grid; gap: 10px; margin: 4px 0 10px; border: 1px solid #d8e7da; border-radius: 12px; padding: 14px; background: #f7fbf7; }
+.event-edit-head { display: flex; align-items: center; justify-content: space-between; color: #4f695b; font-size: 12px; font-weight: 700; }
+.event-edit-head span { color: #829087; font-weight: 400; }
+.event-edit-row { display: grid; grid-template-columns: minmax(0, 1.4fr) 170px 110px minmax(0, 1fr); gap: 10px; align-items: end; }
+.event-edit-field { display: grid; gap: 5px; min-width: 0; }
+.event-edit-field span { color: #5e7065; font-size: 11px; }
+.event-edit-field input, .event-edit-field select { width: 100%; border: 1px solid #d4e1d6; border-radius: 9px; padding: 8px 10px; color: #233b2e; outline: 0; background: #fffefa; font-size: 12px; }
+.event-edit-field input:focus, .event-edit-field select:focus { border-color: #73b594; box-shadow: 0 0 0 3px rgba(115, 181, 148, .14); }
+.event-edit-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 2px; }
+
+/* Phase 1: 证据与 GitHub */
+.evidence-editor { display: grid; gap: 10px; }
+.evidence-editor-head { display: flex; align-items: center; justify-content: space-between; color: #5e7065; font-size: 12px; font-weight: 700; }
+.evidence-item { display: grid; gap: 6px; border: 1px solid #d8e7da; border-radius: 10px; padding: 8px; background: #fbfdfb; }
+.evidence-item textarea { min-height: 66px !important; }
+.evidence-item-meta { display: flex; align-items: center; justify-content: space-between; color: #829087; font-size: 11px; }
+.evidence-github-link { color: #2f6b4a; font-size: 12px; font-weight: 700; text-decoration: none; }
+.evidence-github-link:hover { text-decoration: underline; }
+.github-shell { min-height: 100vh; padding: 42px clamp(22px, 5vw, 80px); color: #233b2e; background: #f4f8f2; }
+.github-header, .github-toolbar, .github-import-bar, .github-card { border: 1px solid #dbe7dc; border-radius: 18px; background: #fffefa; box-shadow: 0 12px 34px rgba(47, 80, 57, .07); }
+.github-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; max-width: 1180px; margin: 0 auto 16px; padding: 28px 30px; }
+.github-header h1 { margin: 5px 0 8px; color: #244f3b; font-size: clamp(30px, 4vw, 48px); letter-spacing: -.04em; }
+.github-header p { margin: 0; color: #718075; }
+.github-toolbar { display: flex; align-items: end; justify-content: space-between; max-width: 1180px; margin: 0 auto 16px; padding: 16px 20px; }
+.github-toolbar label { display: grid; gap: 6px; color: #5e7065; font-size: 12px; font-weight: 700; }
+.github-toolbar input { border: 1px solid #d4e1d6; border-radius: 9px; padding: 9px 10px; color: #233b2e; background: #fffefa; }
+.github-count, .github-card-head > span { color: #829087; font-size: 12px; }
+.github-layout { display: grid; grid-template-columns: minmax(240px, .7fr) minmax(0, 1.5fr); gap: 16px; max-width: 1180px; margin: 0 auto 16px; }
+.github-card { padding: 20px; }
+.github-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+.github-card-head h2 { margin: 5px 0 0; color: #314a3b; font-size: 20px; }
+.repo-option, .commit-option { display: flex; align-items: flex-start; gap: 10px; border-bottom: 1px solid #edf0eb; padding: 12px 2px; cursor: pointer; }
+.repo-option:last-child, .commit-option:last-child { border-bottom: 0; }
+.repo-option input, .commit-option input { margin-top: 3px; accent-color: #2f7653; }
+.repo-option span, .commit-copy { display: grid; gap: 4px; min-width: 0; }
+.repo-option strong, .commit-copy strong { overflow: hidden; color: #33493d; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.repo-option small, .commit-copy small { overflow: hidden; color: #829087; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.commit-option { align-items: center; border-radius: 10px; padding: 12px 10px; }
+.commit-option:hover, .commit-option.selected { background: #f0f8f1; }
+.commit-mark { display: grid; width: 25px; height: 25px; place-items: center; border-radius: 8px; color: #2f7653; background: #e4f1e7; font-weight: 800; }
+.commit-option a { margin-left: auto; color: #5e7065; font-size: 11px; text-decoration: none; }
+.commit-option a:hover { color: #2f6b4a; text-decoration: underline; }
+.github-import-bar { display: flex; align-items: center; justify-content: space-between; gap: 16px; max-width: 1180px; margin: 0 auto; padding: 14px 20px; color: #5e7065; font-size: 12px; }
+.github-empty { max-width: 620px; margin: 40px auto; text-align: center; }
+.github-empty p { color: #718075; }
+.github-error, .github-feedback { color: #b45445; font-size: 12px; }
+@media (max-width: 760px) { .github-header, .github-toolbar, .github-import-bar { align-items: stretch; flex-direction: column; } .github-layout { grid-template-columns: 1fr; } }
+.plan-note-card { display: grid; gap: 10px; border: 1px solid #d8e7da; border-radius: 10px; padding: 12px; background: #fbfdfb; }
+.plan-note-card strong { color: #233b2e; font-size: 13px; }
+.plan-note-card label { display: grid; gap: 5px; }
+.plan-note-card label span { color: #5e7065; font-size: 11px; }
+.plan-note-card textarea, .evidence-item select { width: 100%; border: 1px solid #d4e1d6; border-radius: 9px; padding: 8px 10px; color: #233b2e; outline: 0; background: #fffefa; }
+.plan-note-card textarea { min-height: 58px; resize: vertical; }
+.evidence-item select { font-size: 12px; }
+
+.page-intro { margin: 30px 0 22px; padding-bottom: 22px; border-bottom: 1px solid #e5ebe4; }
+.page-intro h1 { max-width: 760px; margin: 8px 0 10px; color: #163d2f; font-size: clamp(28px, 4vw, 46px); font-weight: 500; letter-spacing: -.04em; }
+.page-intro p { max-width: 720px; margin: 0; color: #68796d; font-size: 15px; line-height: 1.7; }
+.history-page .account-area { align-items: center; }
+.archive-empty { margin-top: 18px; padding: 36px; }
+.daily-records { display: grid; gap: 18px; }
+.daily-record { padding: 22px; }
+.daily-record-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding-bottom: 18px; border-bottom: 1px solid #e5ebe4; }
+.daily-record-head h2 { margin: 7px 0 0; color: #244e3b; font-size: 22px; font-weight: 500; }
+.daily-record-total { display: grid; gap: 4px; text-align: right; }
+.daily-record-total strong { color: #1d5741; font-family: var(--font-geist-mono); font-size: 18px; }
+.daily-record-total span { color: #7a8b80; font-size: 12px; }
+.daily-record-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 28px; padding-top: 20px; }
+.daily-record-grid h3 { margin: 0 0 12px; color: #3d5f4d; font-size: 14px; }
+.daily-event-list, .daily-evidence-list, .daily-notes { display: grid; gap: 8px; }
+.daily-event, .daily-evidence, .daily-note { border: 1px solid #e0e9df; border-radius: 10px; padding: 11px 12px; background: #fbfdfb; }
+.daily-event { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.daily-event div { min-width: 0; display: grid; gap: 4px; }
+.daily-event strong, .daily-evidence strong, .daily-note strong { color: #315544; font-size: 13px; }
+.daily-event span, .daily-evidence span { color: #809087; font-size: 11px; }
+.daily-event b { flex: 0 0 auto; color: #416c54; font-family: var(--font-geist-mono); font-size: 12px; }
+.daily-evidence { display: grid; gap: 5px; }
+.daily-evidence strong { line-height: 1.5; overflow-wrap: anywhere; }
+.daily-notes { margin-top: 12px; }
+.daily-note { display: grid; gap: 6px; }
+.daily-note p { margin: 0; color: #5e7065; font-size: 12px; line-height: 1.6; }
+.daily-note b { color: #3d5f4d; }
+.daily-record-footer { display: flex; justify-content: flex-end; margin-top: 18px; padding-top: 14px; border-top: 1px solid #e5ebe4; }
+@media (max-width: 760px) { .daily-record-grid { grid-template-columns: 1fr; gap: 20px; } .daily-record-head { flex-direction: column; } .daily-record-total { text-align: left; } }
+
+.plan-notes-list .evidence-editor-head { align-items: center; }
+.plan-notes-list .evidence-editor-head > div:first-child { display: grid; gap: 3px; }
+.plan-notes-list .evidence-editor-head small { color: #829087; font-size: 11px; font-weight: 400; }
+.plan-notes-toolbar { display: flex; gap: 8px; }
+.plan-note-card { gap: 0; padding: 0; overflow: hidden; }
+.plan-note-card.expanded { border-color: #bcdac3; box-shadow: 0 5px 16px rgba(47, 80, 57, .06); }
+.plan-note-summary { display: flex; align-items: center; justify-content: space-between; gap: 14px; width: 100%; border: 0; padding: 12px; color: inherit; background: transparent; text-align: left; cursor: pointer; }
+.plan-note-summary:hover { background: #f4faf4; }
+.plan-note-summary-copy { display: grid; gap: 4px; min-width: 0; }
+.plan-note-summary-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plan-note-summary-copy > span { color: #829087; font-size: 11px; }
+.plan-note-summary-meta { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 5px; flex: 0 0 auto; }
+.plan-note-summary-meta em { border-radius: 999px; padding: 3px 6px; color: #4b755b; background: #e8f4e9; font-size: 10px; font-style: normal; }
+.plan-note-summary-meta b { margin-left: 4px; color: #2f6b4a; font-size: 11px; font-weight: 700; white-space: nowrap; }
+.plan-note-editor { display: grid; gap: 10px; border-top: 1px solid #e5eee5; padding: 12px; background: #fbfefb; }
+
+.leetcode-sync-panel { margin-top: 12px; }
+.leetcode-sync-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(180px, .7fr) auto; gap: 10px; align-items: end; margin-top: 12px; }
+.leetcode-sync-grid label { display: grid; gap: 6px; }
+.leetcode-sync-grid label span { color: #5e7065; font-size: 12px; }
+.leetcode-sync-grid input, .leetcode-sync-grid select { width: 100%; border: 1px solid #d4e1d6; border-radius: 10px; padding: 10px 11px; color: #233b2e; outline: 0; background: #fffefa; }
+.leetcode-preview { display: grid; gap: 4px; margin-top: 12px; border-top: 1px solid #e5eee5; padding-top: 10px; }
+.leetcode-item { display: flex; align-items: center; gap: 9px; border-bottom: 1px solid #edf2ec; padding: 9px 2px; cursor: pointer; }
+.leetcode-item:last-child { border-bottom: 0; }
+.leetcode-item input { accent-color: #2f7653; }
+.leetcode-item span { display: grid; gap: 3px; }
+.leetcode-item strong { color: #315544; font-size: 12px; }
+.leetcode-item small { color: #829087; font-size: 11px; }
+@media (max-width: 760px) { .leetcode-sync-grid { grid-template-columns: 1fr; } }
