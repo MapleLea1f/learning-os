@@ -641,7 +641,7 @@ export function LearningDashboard() {
     const minutes = eventMinutes(savedForm.events);
     const { error } = await client.from("learning_days").upsert(
       {
-        ...savedForm,
+        completed: savedForm.completed,
         events: savedForm.events,
         evidence_json: savedForm.evidence,
         plan_notes: savedForm.planNotes,
@@ -654,7 +654,7 @@ export function LearningDashboard() {
       { onConflict: "user_id,record_date" },
     );
 
-    if (error) return false;
+    if (error) throw new Error(error.message || "Supabase 拒绝了这次同步。");
     await refreshSavedViews(dateKey);
     return true;
   }, [authorized, refreshSavedViews, session]);
@@ -678,7 +678,13 @@ export function LearningDashboard() {
     setSyncStatus("saving");
     const savePromise = persistDay(snapshot.form, snapshot.date);
     savingPromiseRef.current = savePromise;
-    const saved = await savePromise;
+    let saved = false;
+    let syncError = "";
+    try {
+      saved = await savePromise;
+    } catch (error) {
+      syncError = error instanceof Error ? error.message : "未知同步错误";
+    }
     savingPromiseRef.current = null;
     savingRef.current = false;
     setSaving(false);
@@ -698,6 +704,7 @@ export function LearningDashboard() {
       return true;
     }
 
+    if (syncError) setMessage(`同步失败：${syncError}`);
     setSyncStatus(configured && session && authorized ? "offline" : "local");
     return false;
   }, [authorized, configured, persistDay, session]);
@@ -872,9 +879,10 @@ export function LearningDashboard() {
       const minutes = eventMinutes(nextForm.events);
       const { error: saveError } = await client.from("learning_days").upsert(
         {
-          ...nextForm,
+          completed: nextForm.completed,
           events: nextForm.events,
           evidence_json: nextForm.evidence,
+          plan_notes: nextForm.planNotes,
           java_ai_minutes: minutes.java_ai,
           platform_minutes: minutes.platform,
           foundation_minutes: minutes.foundation,
@@ -1365,7 +1373,7 @@ export function LearningDashboard() {
   async function saveDay() {
     queueAutosave(formRef.current, selectedDate);
     const saved = await flushAutosave();
-    setMessage(saved ? "已立即同步今天的记录。" : "记录已保留在本地，网络恢复后会自动重试。");
+    if (saved) setMessage("已立即同步今天的记录。");
   }
 
 
