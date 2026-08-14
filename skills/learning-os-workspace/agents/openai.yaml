@@ -1,0 +1,4 @@
+interface:
+  display_name: "Learning OS Workspace"
+  short_description: "Sync Codex project work with Learning OS workspace tasks"
+  default_prompt: "Use the current project folder to resolve its Learning OS workspace, bind the current Codex task to a workspace todo, and record execution steps and evidence."

@@ -1395,7 +1395,7 @@ export function LearningDashboard() {
           <div className="brand-mark">LO</div>
           <div>
             <div className="brand-name">LEARNING OS</div>
-            <div className="brand-subtitle">职业主线 · 事件记录 · 长期证据</div>
+            <div className="brand-subtitle">计划 · 记录 · 证据</div>
           </div>
         </div>
         <div className="account-area">
@@ -1425,16 +1425,16 @@ export function LearningDashboard() {
       <section className="north-star">
         <div className="north-star-copy">
           <div className="eyebrow">职业主线</div>
-          <h1>成为能交付生产级 AI 应用与云原生平台的工程师。</h1>
-          <p>不是在“运维或开发”之间二选一，而是把 Java / AI 应用、生产交付和可靠性沉淀成下一跳能识别的工程能力。</p>
+          <h1>打造可交付的 AI 与云原生能力。</h1>
+          <p>用 Java、AI 应用、交付和可靠性，积累可验证的工程成果。</p>
           <div className="goal-tags">
             <span>Java / AI 应用</span><span>云原生交付</span><span>可观测性与可靠性</span>
           </div>
         </div>
         <div className="current-focus">
           <span className="focus-label">当前阶段</span>
-          <strong>0–6 个月：让工作产生工程信号</strong>
-          <p>优先把自动化、监控、变更和复盘做成可展示成果，而不是只记录花了多少时间。</p>
+          <strong>0–6 个月：留下工程成果</strong>
+          <p>先做自动化、监控、变更和复盘，形成可展示成果。</p>
           <div className="date-picker">
             <label htmlFor="record-date">正在记录</label>
             <input id="record-date" type="date" value={selectedDate} disabled={timerInProgress || dateChanging} onChange={(event) => void handleDateChange(event.target.value)} />
@@ -1457,8 +1457,8 @@ export function LearningDashboard() {
         <div className="card-head plan-library-head">
           <div>
             <div className="eyebrow">跨日需求计划库</div>
-            <h2 className="card-title">先把需求放进计划，再把投入沉淀成可追溯事件。</h2>
-            <p className="card-caption">计划可跨日保留；只有你手动排入的事项会出现在当天。一次计时结束不会自动关闭长期计划。</p>
+            <h2 className="card-title">管理长期计划，沉淀可追溯记录。</h2>
+            <p className="card-caption">计划可跨日保留；只有排入当天的事项会显示。计时结束不会关闭计划。</p>
           </div>
           <div className="plan-head-actions">
             <button className="button button-secondary" type="button" disabled={!configured || !session || !authorized || planSaving} onClick={() => openPlanComposer("general")}>新建计划</button>
@@ -1641,7 +1641,7 @@ export function LearningDashboard() {
           </div>
 
           <details className="notes-panel" open>
-            <summary>按计划记录证据、卡点与明日第一步</summary>
+            <summary>计划复盘</summary>
             <div className="notes-grid">
               <div className="evidence-editor">
                 <div className="evidence-editor-head"><span>计划证据</span><button className="button-quiet" type="button" onClick={() => updateForm((current) => ({ ...current, evidence: [...current.evidence, { id: createEvidenceId(), type: "text", text: "", createdAt: new Date().toISOString() }] }))}>+ 添加证据</button></div>
@@ -1656,7 +1656,7 @@ export function LearningDashboard() {
                 <a className="evidence-github-link" href={"/github?date=" + selectedDate}>打开 GitHub 证据页 →</a>
               </div>
               <div className="plan-notes-list">
-                <div className="evidence-editor-head"><div><span>计划复盘</span><small>只显示今天有关联投入的计划</small></div><div className="plan-notes-toolbar">{planReviewPlans.length > 1 && <><button className="button-quiet" type="button" onClick={() => setExpandedPlanNoteIds(planReviewPlans.map((plan) => plan.id))}>全部展开</button><button className="button-quiet" type="button" onClick={() => setExpandedPlanNoteIds([])}>全部收起</button></>}</div></div>
+                <div className="evidence-editor-head"><div><span>计划复盘</span><small>只看今天有投入的计划</small></div><div className="plan-notes-toolbar">{planReviewPlans.length > 1 && <><button className="button-quiet" type="button" onClick={() => setExpandedPlanNoteIds(planReviewPlans.map((plan) => plan.id))}>全部展开</button><button className="button-quiet" type="button" onClick={() => setExpandedPlanNoteIds([])}>全部收起</button></>}</div></div>
                 {planReviewPlans.map((plan) => {
                   const note = form.planNotes[plan.id] ?? { blocker: "", reflection: "" };
                   const minutes = form.events.filter((event) => event.planId === plan.id).reduce((total, event) => total + event.minutes, 0);
@@ -1672,7 +1672,7 @@ export function LearningDashboard() {
                     {expanded && <div className="plan-note-editor"><label><span>卡点 / 待解决问题</span><textarea value={note.blocker} placeholder="没有卡点可留空" onChange={(event) => updateForm((current) => ({ ...current, planNotes: { ...current.planNotes, [plan.id]: { ...note, blocker: event.target.value } } }))} /></label><label><span>明日第一步</span><textarea value={note.reflection} placeholder="例如：先补 3 组异常样例" onBlur={() => { const nextAction = note.reflection.trim(); if (nextAction && nextAction !== plan.next_action.trim()) void updateExistingPlan(plan, { next_action: nextAction }); }} onChange={(event) => updateForm((current) => ({ ...current, planNotes: { ...current.planNotes, [plan.id]: { ...note, reflection: event.target.value } } }))} /></label></div>}
                   </article>;
                 })}
-                {!planReviewPlans.length && <p className="empty-state">先把投入或证据关联到计划。这里会出现对应的复盘卡片</p>}
+                {!planReviewPlans.length && <p className="empty-state">先关联计划，这里才会显示复盘。</p>}
               </div>
             </div>
           </details>
@@ -1686,9 +1686,9 @@ export function LearningDashboard() {
 
         <aside className="side-stack">
           <section className="card project-card">
-            <div className="eyebrow">作品集主项目 · 闲置贩子</div>
-            <h2 className="card-title">把一件闲置，变成一条能发布的商品</h2>
-            <p>它不是自动发帖工具，而是从一张照片开始，帮普通人补齐商品信息、写出可信文案，并给出带依据的挂牌建议。</p>
+            <div className="eyebrow">作品集项目 · 闲置贩子</div>
+            <h2 className="card-title">把闲置变成可发布商品</h2>
+            <p>从照片开始，补齐商品信息，生成文案和挂牌建议。</p>
             <ol>
               {primaryProjectSteps.map((step) => <li key={step}>{step}</li>)}
             </ol>
@@ -1696,7 +1696,7 @@ export function LearningDashboard() {
             <div className="project-secondary-note"><strong>另一个方向：</strong>消费维权助手「要钱官」暂作为备选，先不和主项目争夺首页注意力。</div>
           </section>
           <section className="card allocation-card">
-            <div className="card-head"><div><div className="eyebrow">本周投入</div><h2 className="card-title">能力配比不是三张填空题。</h2></div></div>
+            <div className="card-head"><div><div className="eyebrow">本周投入</div><h2 className="card-title">投入要服务于目标。</h2></div></div>
             <div className="allocation">
               {(Object.keys(categoryMeta) as LearningCategory[]).map((category) => {
                 const minutes = todayMinutes[category];
@@ -1713,7 +1713,7 @@ export function LearningDashboard() {
       </section>
 
 
-      <p className="footer-note">隐私边界：项目只应使用公开或脱敏样例。不要上传账号密码、身份证/手机号、完整聊天记录、订单隐私、公司内部日志或其他可直接识别个人与组织的信息。</p>
+      <p className="footer-note">隐私：只使用公开或脱敏内容，不上传密码、身份信息、完整聊天记录或内部日志。</p>
     </main>
   );
 }
