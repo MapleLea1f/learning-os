@@ -1,8 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
+import { fileURLToPath } from "node:url";
 
 const stateRoot = path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local"), "LearningOS");
 const statePath = path.join(stateRoot, "connector-state.json");
@@ -94,30 +95,64 @@ async function collectGitCommits(workspace, state, config, since = "") {
 }
 
 function readEnv(cwd) {
-  const envPath = path.join(absolute(cwd), ".env.local");
-  if (!fs.existsSync(envPath)) return {};
-  return Object.fromEntries(fs.readFileSync(envPath, "utf8").split(/\r?\n/).filter((line) => line && !line.trim().startsWith("#")).map((line) => {
-    const separator = line.indexOf("=");
-    return separator < 0 ? [line.trim(), ""] : [line.slice(0, separator).trim(), line.slice(separator + 1).trim().replace(/^['"]|['"]$/g, "")];
-  }));
+  const candidates = [cwd, process.env.LEARNING_OS_ROOT, process.env.INIT_CWD, process.cwd()].filter(Boolean);
+  const visited = new Set();
+  for (const candidate of candidates) {
+    const envPath = path.join(absolute(candidate), ".env.local");
+    if (visited.has(envPath)) continue;
+    visited.add(envPath);
+    if (!fs.existsSync(envPath)) continue;
+    return Object.fromEntries(fs.readFileSync(envPath, "utf8").split(/\r?\n/).filter((line) => line && !line.trim().startsWith("#")).map((line) => {
+      const separator = line.indexOf("=");
+      return separator < 0 ? [line.trim(), ""] : [line.slice(0, separator).trim(), line.slice(separator + 1).trim().replace(/^['"]|['"]$/g, "")];
+    }));
+  }
+  return {};
 }
 
 function normalizeCode(value) {
   return String(value || "").replaceAll("-", "").trim().toUpperCase();
 }
 
+async function refreshAccessToken(config) {
+  if (!config?.refreshToken) throw new Error("Connector token expired and no refresh token is available. Reconnect the local connector.");
+  const response = await fetch(`${config.supabaseUrl}/auth/v1/token?grant_type=refresh_token`, {
+    method: "POST",
+    headers: { apikey: config.anonKey, "Content-Type": "application/json" },
+    body: JSON.stringify({ refresh_token: config.refreshToken }),
+  });
+  if (!response.ok) throw new Error(`Token refresh failed with ${response.status}: ${(await response.text()).slice(0, 200)}`);
+  const result = await response.json();
+  if (!result?.access_token) throw new Error("Token refresh returned no access token.");
+  const updated = { ...config, accessToken: result.access_token, refreshToken: result.refresh_token || config.refreshToken };
+  saveJson(configPath, updated);
+  return updated;
+}
+
 async function restRequest(config, resource, options = {}) {
   if (!config?.supabaseUrl || !config?.anonKey || !config?.accessToken) throw new Error("Connector is not paired.");
-  const response = await fetch(`${config.supabaseUrl}/rest/v1/${resource}`, {
+  const execute = async (token) => fetch(`${config.supabaseUrl}/rest/v1/${resource}`, {
     ...options,
     headers: {
       apikey: config.anonKey,
-      Authorization: `Bearer ${config.accessToken}`,
+      Authorization: `Bearer ${token}`,
       "Content-Type": "application/json",
       Prefer: "return=representation",
       ...(options.headers || {}),
     },
   });
+  let response = await execute(config.accessToken);
+  if (response.status === 401) {
+    const errorText = await response.text();
+    if (errorText.includes("JWT expired")) {
+      const refreshed = await refreshAccessToken(config);
+      config.accessToken = refreshed.accessToken;
+      config.refreshToken = refreshed.refreshToken;
+      response = await execute(config.accessToken);
+    } else {
+      throw new Error(`Supabase returned 401: ${errorText.slice(0, 300)}`);
+    }
+  }
   if (!response.ok) throw new Error(`Supabase returned ${response.status}: ${(await response.text()).slice(0, 300)}`);
   const text = await response.text();
   return text ? JSON.parse(text) : null;
@@ -126,8 +161,8 @@ async function restRequest(config, resource, options = {}) {
 async function exchangePairing(values) {
   const cwd = values.cwd || process.cwd();
   const env = readEnv(cwd);
-  const supabaseUrl = values["supabase-url"] || env.NEXT_PUBLIC_SUPABASE_URL;
-  const anonKey = values["anon-key"] || env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const supabaseUrl = values["supabase-url"] || env.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const anonKey = values["anon-key"] || env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
   if (!supabaseUrl || !anonKey) throw new Error("Supabase URL and anon key are required. Put them in .env.local or pass --supabase-url and --anon-key.");
   const response = await fetch(`${supabaseUrl}/rest/v1/rpc/exchange_connector_pairing`, {
     method: "POST",
@@ -137,7 +172,7 @@ async function exchangePairing(values) {
   if (!response.ok) throw new Error(`Pairing exchange failed with ${response.status}: ${(await response.text()).slice(0, 300)}`);
   const result = await response.json();
   if (!result?.ok) throw new Error(result?.error || "Invalid or expired pairing code.");
-  const config = { supabaseUrl, anonKey, accessToken: result.access_token, userId: result.user_id, workspaceId: result.workspace_id, connectedAt: new Date().toISOString() };
+  const config = { supabaseUrl, anonKey, accessToken: result.access_token, refreshToken: result.refresh_token || null, userId: result.user_id, workspaceId: result.workspace_id, connectedAt: new Date().toISOString() };
   saveJson(configPath, config);
   return config;
 }
@@ -205,20 +240,67 @@ function disconnectWorkspace(values) {
   return { ok: true, disconnected: workspaceToDisconnect, statePath, configPath };
 }
 
-function openInExplorer(target) {
-  const resolved = absolute(target);
-  const stats = fs.statSync(resolved);
-  const args = stats.isDirectory() ? [resolved] : ["/select,", resolved];
-  const child = execFileSync("explorer.exe", args, { windowsHide: true, stdio: "ignore" });
-  return { path: resolved, kind: stats.isDirectory() ? "directory" : "file", child };
+let oneCommanderCache = { exe: null, at: 0 };
+
+function detectOneCommander() {
+  if (process.platform !== "win32") return null;
+  const now = Date.now();
+  if (oneCommanderCache.exe && now - oneCommanderCache.at < 60_000 && fs.existsSync(oneCommanderCache.exe)) {
+    return oneCommanderCache.exe;
+  }
+  let exe = null;
+  try {
+    // 注册表查询约 100ms，One Commander 注册为默认打开方式时会写入该键。
+    const out = execFileSync("reg.exe", ["query", "HKCU\\Software\\Classes\\Directory\\shell\\OpenInOneCommander\\command", "/ve"], { encoding: "utf8", windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
+    const match = out.match(/REG_SZ\s+(?:"([^"]+)"|([^\s]+))/);
+    if (match) exe = (match[1] || match[2] || "").trim();
+  } catch {}
+  if (!exe || !fs.existsSync(exe)) {
+    try {
+      exe = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", "(Get-Process OneCommander -ErrorAction SilentlyContinue | Select-Object -First 1).Path"], { encoding: "utf8", windowsHide: true }).trim() || null;
+    } catch {
+      exe = null;
+    }
+  }
+  if (exe && fs.existsSync(exe)) {
+    oneCommanderCache = { exe, at: now };
+    return exe;
+  }
+  return null;
 }
 
-function pickLocalPath(kind) {
+async function openInExplorer(target) {
+  if (process.platform !== "win32") throw new Error("打开本地文件夹仅支持 Windows。");
+  const resolved = absolute(target);
+  const stats = fs.statSync(resolved);
+  const isDirectory = stats.isDirectory();
+  const oneCommander = detectOneCommander();
+  if (oneCommander) {
+    // One Commander 单实例：用 -o 打开路径、-newtab 新建标签页。
+    // 直接等待 exe 退出可能因 One Commander 正忙而阻塞很久；带 8 秒超时，
+    // 超时说明请求已转发（One Commander 日志会出现 Started again），按成功处理。
+    const openTarget = isDirectory ? resolved : path.dirname(resolved);
+    const command = `& '${oneCommander.replace(/'/g, "''")}' -o '${openTarget.replace(/'/g, "''")}' -newtab`;
+    const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command], { cwd: path.dirname(oneCommander), windowsHide: true, stdio: "ignore", timeout: 8_000 });
+    if (!result.error || result.error?.code === "ETIMEDOUT") {
+      return { path: resolved, kind: isDirectory ? "directory" : "file", openedWith: "OneCommander" };
+    }
+  }
+  // 回退：交给系统默认文件管理器，或使用资源管理器选中文件。
+  const args = isDirectory ? [resolved] : ["/select,", resolved];
+  const result = spawnSync("explorer.exe", args, { windowsHide: true, stdio: "ignore" });
+  if (result.error) throw result.error;
+  return { path: resolved, kind: isDirectory ? "directory" : "file", openedWith: "Explorer" };
+}
+
+async function pickLocalPath(kind) {
   if (process.platform !== "win32") throw new Error("本机文件选择器目前只支持 Windows。");
-  const command = kind === "file"
-    ? "Add-Type -AssemblyName System.Windows.Forms; $dialog = New-Object System.Windows.Forms.OpenFileDialog; $dialog.Multiselect = $false; if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $dialog.FileName }"
-    : "Add-Type -AssemblyName System.Windows.Forms; $dialog = New-Object System.Windows.Forms.FolderBrowserDialog; if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $dialog.SelectedPath }";
-  const selected = execFileSync("powershell.exe", ["-NoProfile", "-STA", "-Command", command], { encoding: "utf8", windowsHide: false }).trim();
+  // 用置顶的隐形宿主窗体作为 Owner，保证选择框弹出时位于前台，不会藏在其他窗口后面。
+  const pick = kind === "file"
+    ? "$dialog = New-Object System.Windows.Forms.OpenFileDialog; $dialog.Title = '选择文件'; $dialog.Multiselect = $false; if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $dialog.FileName }"
+    : "$dialog = New-Object System.Windows.Forms.FolderBrowserDialog; $dialog.Description = '选择文件夹'; if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $dialog.SelectedPath }";
+  const owner = "Add-Type -AssemblyName System.Windows.Forms; $owner = New-Object System.Windows.Forms.Form; $owner.TopMost = $true; $owner.ShowInTaskbar = $false; $owner.Opacity = 0; $owner.StartPosition = 'CenterScreen'; $owner.Show()";
+  const selected = execFileSync("powershell.exe", ["-NoProfile", "-STA", "-Command", `${owner}; ${pick}; $dialog.Dispose(); $owner.Dispose()`], { encoding: "utf8", windowsHide: true }).trim();
   return selected || null;
 }
 function readHttpBody(request) {
@@ -243,6 +325,33 @@ function writeHttpJson(response, status, payload) {
   response.end(JSON.stringify(payload));
 }
 
+function commandArgs(body) {
+  const args = [];
+  if (body.command) args.push(String(body.command));
+  if (body.subcommand) args.push(String(body.subcommand));
+  for (const [key, value] of Object.entries(body.values || {})) {
+    if (value === true) args.push(`--${key}`);
+    else args.push(`--${key}`, String(value));
+  }
+  return args;
+}
+
+async function runConnectorCommand(body) {
+  const script = fileURLToPath(import.meta.url);
+  const args = commandArgs(body);
+  return new Promise((resolve, reject) => {
+    execFile(process.execPath, [script, ...args], { cwd: path.dirname(script), windowsHide: true, timeout: 60_000 }, (error, stdout, stderr) => {
+      if (error) {
+        const message = (stderr || error.message || "").trim() || "Connector command failed.";
+        reject(new Error(message));
+        return;
+      }
+      try { resolve({ ok: true, result: JSON.parse(stdout) }); }
+      catch { resolve({ ok: true, result: stdout.trim() }); }
+    });
+  });
+}
+
 async function startConnectorServer(values) {
   const port = Number(values.port || process.env.LEARNING_OS_CONNECTOR_PORT || 4317);
   const server = createServer(async (request, response) => {
@@ -256,7 +365,7 @@ async function startConnectorServer(values) {
         return;
       }
       const pathname = new URL(request.url || "/", `http://127.0.0.1:${port}`).pathname;
-      if (request.method !== "POST" || !["/connect", "/disconnect", "/open", "/pick"].includes(pathname)) {
+      if (request.method !== "POST" || !["/connect", "/disconnect", "/open", "/pick", "/command"].includes(pathname)) {
         writeHttpJson(response, 404, { error: "Not found." });
         return;
       }
@@ -264,15 +373,22 @@ async function startConnectorServer(values) {
       let result;
       if (pathname === "/connect") result = await connectWorkspace(valuesFromRequest);
       else if (pathname === "/disconnect") result = disconnectWorkspace(valuesFromRequest);
-      else if (pathname === "/open") result = { ok: true, opened: openInExplorer(valuesFromRequest.path) };
-      else result = { ok: true, path: pickLocalPath(valuesFromRequest.kind === "file" ? "file" : "directory") };
+      else if (pathname === "/open") result = { ok: true, opened: await openInExplorer(valuesFromRequest.path) };
+      else if (pathname === "/pick") result = { ok: true, path: await pickLocalPath(valuesFromRequest.kind === "file" ? "file" : "directory") };
+      else result = await runConnectorCommand(valuesFromRequest);
       writeHttpJson(response, 200, result);
     } catch (error) {
       writeHttpJson(response, 500, { error: error instanceof Error ? error.message : String(error) });
     }
   });
   await new Promise((resolve, reject) => {
-    server.once("error", reject);
+    server.once("error", (error) => {
+      if (error?.code === "EADDRINUSE") {
+        output({ ok: true, alreadyRunning: true, listening: `http://127.0.0.1:${port}` });
+        process.exit(0);
+      }
+      reject(error);
+    });
     server.listen(port, "127.0.0.1", resolve);
   });
   output({ ok: true, listening: `http://127.0.0.1:${port}`, statePath, configPath });

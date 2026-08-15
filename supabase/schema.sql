@@ -136,10 +136,13 @@ create table if not exists public.connector_pairings (
   workspace_id uuid not null references public.workspaces (id) on delete cascade,
   pairing_code_hash text not null unique,
   access_token text not null,
+  refresh_token text,
   expires_at timestamptz not null,
   used_at timestamptz,
   created_at timestamptz not null default now()
 );
+
+alter table public.connector_pairings add column if not exists refresh_token text;
 
 create table if not exists public.workspace_evidence (
   id uuid primary key default gen_random_uuid(),
@@ -317,6 +320,7 @@ begin
   return jsonb_build_object(
     'ok', true,
     'access_token', pairing.access_token,
+    'refresh_token', pairing.refresh_token,
     'workspace_id', pairing.workspace_id,
     'user_id', pairing.user_id
   );

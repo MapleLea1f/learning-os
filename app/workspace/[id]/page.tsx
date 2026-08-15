@@ -16,6 +16,7 @@ const priorityLabels: Record<WorkspaceTaskPriority, string> = { high: "高", med
 const statusLabels: Record<WorkspaceTaskStatus, string> = { todo: "待处理", in_progress: "进行中", completed: "已完成", blocked: "已阻塞" };
 const resourceLabels: Record<WorkspaceResourceType, string> = { link: "网页链接", chatgpt: "历史 ChatGPT 链接（旧）", deepseek: "网页链接（旧）", local_path: "本地目录", file_output: "产出文件（旧）" };
 const resourceOptions = [["link", "网页链接"], ["local_path", "本地目录"]] as const;
+type PairingResult = { ok?: boolean; cwd?: string; usedFallback?: boolean; error?: string };
 
 
 
@@ -51,6 +52,10 @@ export default function WorkspaceDetailPage() {
   const [plans, setPlans] = useState<WorkPlan[]>([]);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState("");
+  const [pairingLoading, setPairingLoading] = useState(false);
+  const [pairingConnected, setPairingConnected] = useState(false);
+  const [pairingCode, setPairingCode] = useState("");
+  const [pairingId, setPairingId] = useState<string | null>(null);
   const [taskTitle, setTaskTitle] = useState("");
   const [taskPriority, setTaskPriority] = useState<WorkspaceTaskPriority>("medium");
   const [taskDueDate, setTaskDueDate] = useState("");
@@ -147,6 +152,93 @@ export default function WorkspaceDetailPage() {
     if (error) setMessage(`删除资源失败：${error.message}`);
     else setResources((current) => current.filter((item) => item.id !== resource.id));
   }
+  async function createPairing() {
+    const client = getSupabase();
+    if (!client || !workspace) return;
+    setPairingLoading(true);
+    setMessage("正在连接本地连接器…");
+    const { data: sessionData } = await client.auth.getSession();
+    const currentSession = sessionData.session;
+    if (!currentSession) {
+      setMessage("请先登录后再连接本地连接器。");
+      setPairingLoading(false);
+      return;
+    }
+    const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    const bytes = new Uint8Array(12);
+    crypto.getRandomValues(bytes);
+    const rawCode = Array.from(bytes, (byte) => alphabet[byte % alphabet.length]).join("");
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(rawCode));
+    const codeHash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+    const pairingPayload = {
+      user_id: currentSession.user.id,
+      workspace_id: workspace.id,
+      pairing_code_hash: codeHash,
+      access_token: currentSession.access_token,
+      refresh_token: currentSession.refresh_token ?? null,
+      expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+    };
+    let { data, error } = await client.from("connector_pairings").insert(pairingPayload).select("id").single();
+    if (error?.code === "PGRST204" || (error?.message || "").includes("refresh_token")) {
+      const { data: retryData, error: retryError } = await client.from("connector_pairings").insert({ ...pairingPayload, refresh_token: undefined }).select("id").single();
+      data = retryData;
+      error = retryError;
+      if (!error) setMessage("已连接，但数据库缺少 refresh_token 字段，建议在 Supabase SQL Editor 运行 supabase/schema.sql 以支持自动续期。");
+    }
+    if (error || !data) {
+      const errorMessage = error?.message || "未知错误";
+      const missingTable = error?.code === "PGRST205" || errorMessage.includes("connector_pairings") || errorMessage.includes("schema cache");
+      setMessage(missingTable ? "缺少 connector_pairings 表，请在 Supabase SQL Editor 执行 supabase/schema.sql。" : `生成配对码失败：${errorMessage}`);
+      setPairingLoading(false);
+      return;
+    }
+    const formattedCode = rawCode.slice(0, 4) + "-" + rawCode.slice(4, 8) + "-" + rawCode.slice(8);
+    setPairingCode(formattedCode);
+    setPairingId(data.id as string);
+    setPairingConnected(false);
+    const connectResponse = await fetch("http://127.0.0.1:4317/connect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code: formattedCode, cwd: workspace.local_path || null }),
+    }).catch(() => null);
+    const payload = connectResponse ? await connectResponse.json().catch(() => ({})) as PairingResult : { error: "本机连接器未启动，请先运行 node scripts/learning-os-workspace.mjs serve。" };
+    if (!connectResponse?.ok) {
+      setPairingConnected(false);
+      setMessage(`自动连接失败：${payload.error || "请使用下方命令手动连接。"}`);
+    } else if (payload.usedFallback) {
+      setPairingConnected(true);
+      setMessage("");
+    } else {
+      setPairingConnected(true);
+      setMessage("");
+    }
+    setPairingLoading(false);
+  }
+
+  async function cancelPairing() {
+    if (!pairingId) return;
+    const client = getSupabase();
+    if (!client) return;
+    setPairingLoading(true);
+    const [{ error: pairingError }, disconnectResponse] = await Promise.all([
+      client.from("connector_pairings").update({ used_at: new Date().toISOString() }).eq("id", pairingId),
+      fetch("http://127.0.0.1:4317/disconnect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cwd: workspace?.local_path || null }),
+      }),
+    ]);
+    const disconnectPayload = disconnectResponse ? await disconnectResponse.json().catch(() => ({})) as PairingResult : { error: "本机连接器未启动，请先运行 node scripts/learning-os-workspace.mjs serve。" };
+    if (pairingError || !disconnectResponse?.ok) {
+      setMessage(`取消连接失败：${pairingError?.message || disconnectPayload.error || "未知错误"}`);
+    } else {
+      setPairingConnected(false);
+      setPairingId(null);
+      setPairingCode("");
+      setMessage("");
+    }
+    setPairingLoading(false);
+  }
 
   if (!isSupabaseConfigured) return <main className="workspace-shell"><section className="workspace-card workspace-empty"><h1>工作区</h1><p>请先配置 Supabase，再使用工作区。</p><Link className="button" href="/">返回日报</Link></section></main>;
   if (!session) return <main className="workspace-shell"><section className="workspace-card workspace-empty"><h1>工作区</h1><p>请先完成 GitHub 登录。</p><Link className="button" href="/">返回日报</Link></section></main>;
@@ -155,8 +247,9 @@ export default function WorkspaceDetailPage() {
   if (!workspace) return <main className="workspace-shell"><section className="workspace-card workspace-empty"><h1>工作区不存在</h1><Link className="button" href="/workspaces">返回工作区列表</Link></section></main>;
 
   return <main className="workspace-shell">
-    <header className="workspace-header"><div><div className="eyebrow">计划工作台</div><h1>{workspace.name}</h1><p>{workspace.description || "这个工作区还没有说明。"}</p>{workspace.local_path && <div className="workspace-local-path"><code className="workspace-path">{workspace.local_path}</code><button className="button-quiet" type="button" onClick={() => void openLocalPath(workspace.local_path || "").catch((error) => setMessage(error instanceof Error ? error.message : "打开本地路径失败。"))}>打开本地目录</button></div>}</div><div className="workspace-header-actions"><Link className="button button-secondary" href="/workspaces">工作区列表</Link><Link className="button button-secondary" href="/">返回日报</Link></div></header>
+    <header className="workspace-header"><div><div className="eyebrow">计划工作台</div><h1>{workspace.name}</h1><p>{workspace.description || "这个工作区还没有说明。"}</p>{workspace.local_path && <div className="workspace-local-path"><code className="workspace-path">{workspace.local_path}</code><button className="button-quiet" type="button" onClick={() => void openLocalPath(workspace.local_path || "").catch((error) => setMessage(error instanceof Error ? error.message : "打开本地路径失败。"))}>打开本地目录</button></div>}</div><div className="workspace-header-actions"><Link className="button button-secondary" href="/workspaces">工作区列表</Link><Link className="button button-secondary" href="/">返回日报</Link><button className="button" type="button" disabled={pairingLoading} onClick={() => void (pairingConnected ? cancelPairing() : createPairing())}>{pairingLoading ? "正在连接…" : pairingConnected ? "取消连接" : "连接本地连接器"}</button></div></header>
     {message && <p className="workspace-feedback" role="status">{message}</p>}
+    {pairingCode && <section className={`workspace-card workspace-pairing${pairingConnected ? " connected" : " waiting"}`}><div className="workspace-card-head"><div><span className="eyebrow">本地连接器</span><h2>{pairingConnected ? "已连接" : "等待连接"}：{workspace.name}</h2></div><button className="button-quiet" type="button" disabled={pairingLoading} onClick={() => void cancelPairing()}>{pairingConnected ? "断开连接" : "取消连接"}</button></div>{pairingLoading && !pairingConnected ? <p className="workspace-pairing-status">正在连接本地连接器…</p> : pairingConnected ? <p className="workspace-pairing-status">已自动完成连接，运行 <code>evidence scan</code> 可同步 Git 提交证据。</p> : <div className="workspace-pairing-fallback"><p>自动连接失败，可运行下方命令手动连接（配对码 10 分钟内有效）：</p><code className="workspace-command">node scripts/learning-os-workspace.mjs connect --code {pairingCode} --cwd {workspace.local_path || "."}</code><p className="workspace-pairing-code">配对码 <strong>{pairingCode}</strong>，取消连接后立即失效。</p></div>}</section>}
     <section className="workspace-detail-grid">
       <div className="workspace-main-column">
         <section className="workspace-card"><div className="workspace-card-head"><div><span className="eyebrow">执行清单</span><h2>待办事项</h2></div><span>{activeTasks.length} 个未完成</span></div><form className="workspace-task-form" onSubmit={createTask}><input value={taskTitle} placeholder="添加一个需要推进的事项" onChange={(event) => setTaskTitle(event.target.value)} /><select value={taskPriority} onChange={(event) => setTaskPriority(event.target.value as WorkspaceTaskPriority)}>{Object.entries(priorityLabels).map(([value, label]) => <option key={value} value={value}>{label}优先级</option>)}</select><input type="date" value={taskDueDate} onChange={(event) => setTaskDueDate(event.target.value)} /><button className="button" type="submit" disabled={!taskTitle.trim()}>添加待办</button></form><div className="workspace-task-list">{activeTasks.map((task) => <article className={`workspace-task-row priority-${task.priority}`} key={task.id}>{editingTaskId === task.id ? <div className="workspace-task-edit"><input autoFocus value={editingTaskTitle} onChange={(event) => setEditingTaskTitle(event.target.value)} /><button className="button button-secondary" type="button" onClick={() => { void updateTask(task, { title: editingTaskTitle.trim() || task.title }); setEditingTaskId(null); }}>保存</button><button className="button-quiet" type="button" onClick={() => setEditingTaskId(null)}>取消</button></div> : <><input className="workspace-task-check" type="checkbox" checked={task.status === "completed"} onChange={() => void updateTask(task, { status: task.status === "completed" ? "todo" : "completed" })} /><div className="workspace-task-copy"><strong>{task.title}</strong><span>{priorityLabels[task.priority]}优先级 · {statusLabels[task.status]}{task.due_date ? ` · 截止 ${task.due_date}` : ""}</span>{task.notes && <small>{task.notes}</small>}</div><select value={task.status} onChange={(event) => void updateTask(task, { status: event.target.value as WorkspaceTaskStatus })}>{Object.entries(statusLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><button className="button-quiet" type="button" onClick={() => { setEditingTaskId(task.id); setEditingTaskTitle(task.title); }}>编辑</button><button className="button-quiet danger" type="button" onClick={() => void deleteTask(task)}>删除</button></>}</article>)}{!activeTasks.length && <p className="workspace-empty">还没有未完成待办，可以从一个最小动作开始。</p>}</div>{completedTasks.length > 0 && <details className="workspace-completed"><summary>已完成 {completedTasks.length} 项</summary>{completedTasks.map((task) => <div className="workspace-completed-row" key={task.id}><span>✓</span><strong>{task.title}</strong><button className="button-quiet" type="button" onClick={() => void updateTask(task, { status: "todo" })}>恢复</button></div>)}</details>}</section>

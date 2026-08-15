@@ -6,6 +6,7 @@ import Link from "next/link";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import { getSupabase, isSupabaseConfigured } from "./supabase-client";
+import type { Workspace } from "./workspace-types";
 
 type LearningCategory = "java_ai" | "platform" | "foundation";
 
@@ -47,11 +48,12 @@ type WorkPlan = {
   github_repo: string | null;
   status: PlanStatus;
   scheduled_date: string | null;
+  workspace_id: string | null;
   created_at: string;
   updated_at: string;
 };
 
-type PlanForm = Pick<WorkPlan, "title" | "priority" | "target_date" | "next_action" | "details" | "github_repo" | "status">;
+type PlanForm = Pick<WorkPlan, "title" | "priority" | "target_date" | "next_action" | "details" | "workspace_id" | "github_repo" | "status">;
 
 type PlanNote = {
   blocker: string;
@@ -194,6 +196,7 @@ function blankPlanForm(targetDate: string): PlanForm {
     next_action: "",
     details: "",
     github_repo: null,
+    workspace_id: null,
     status: "planned",
   };
 }
@@ -547,6 +550,7 @@ export function LearningDashboard() {
   const [authorizationChecked, setAuthorizationChecked] = useState(false);
   const [weeklyRecords, setWeeklyRecords] = useState<StoredDay[]>([]);
   const [plans, setPlans] = useState<WorkPlan[]>([]);
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [planEfforts, setPlanEfforts] = useState<Record<string, PlanEffort>>({});
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -949,11 +953,12 @@ export function LearningDashboard() {
       setAuthorized(true);
       setAuthorizationChecked(true);
       const startKey = weekStartKey(selectedDate);
-      const [{ data: today, error: todayError }, { data: week, error: weekError }, { data: planData, error: plansError }, { data: effortData }] = await Promise.all([
+      const [{ data: today, error: todayError }, { data: week, error: weekError }, { data: planData, error: plansError }, { data: effortData }, { data: workspaceData, error: workspacesError }] = await Promise.all([
         client.from("learning_days").select("*").eq("record_date", selectedDate).maybeSingle(),
         client.from("learning_days").select("*").gte("record_date", startKey).lte("record_date", selectedDate).order("record_date", { ascending: true }),
         client.from("work_plans").select("*").order("target_date", { ascending: true }).order("created_at", { ascending: false }),
         client.from("learning_days").select("record_date, events"),
+        client.from("workspaces").select("id,name,description,local_path,status,created_at,updated_at").eq("status", "active").order("updated_at", { ascending: false }),
       ]);
 
       if (cancelled) return;
@@ -970,6 +975,7 @@ export function LearningDashboard() {
           setMessage("计划库尚未初始化。请在 Supabase 执行更新后的 schema.sql 后重新加载。");
         } else {
           setPlans((planData as WorkPlan[] | null) ?? []);
+          setWorkspaces(workspacesError ? [] : (workspaceData as Workspace[] | null) ?? []);
         }
         setPlanEfforts(planEffortFromRecords((effortData as Array<Pick<StoredDay, "record_date" | "events">> | null) ?? []));
       }
@@ -1053,6 +1059,7 @@ export function LearningDashboard() {
       next_action: plan.next_action,
       details: plan.details,
       github_repo: plan.github_repo ?? null,
+      workspace_id: plan.workspace_id ?? null,
       status: plan.status,
     });
     setPlanComposerOpen(true);
@@ -1122,6 +1129,7 @@ export function LearningDashboard() {
       next_action: nextAction,
       details: planForm.details.trim(),
       github_repo: planForm.github_repo?.trim() || null,
+      workspace_id: planForm.workspace_id || null,
       status: planForm.status,
       updated_at: new Date().toISOString(),
     };
@@ -1358,16 +1366,20 @@ export function LearningDashboard() {
   async function signOut() {
     const client = getSupabase();
     if (!client) return;
-    await client.auth.signOut();
-    clearDraft(currentDraftKey);
+    const saved = await flushAutosave();
     latestSaveRef.current = null;
+    const { error } = await client.auth.signOut();
+    if (error) {
+      setMessage(`退出登录失败：${error.message}`);
+      return;
+    }
     const emptyForm = blankForm();
     formRef.current = emptyForm;
     setForm(emptyForm);
     setWeeklyRecords([]);
     setPlans([]);
     setTimerPlanId(null);
-    setSyncStatus("local");
+    setSyncStatus(saved ? "local" : "offline");
   }
 
   async function saveDay() {
@@ -1483,6 +1495,7 @@ export function LearningDashboard() {
                   <label><span>状态</span><select value={planForm.status} onChange={(event) => setPlanForm((current) => ({ ...current, status: event.target.value as PlanStatus }))}>{(Object.keys(planStatusMeta) as PlanStatus[]).map((status) => <option key={status} value={status}>{planStatusMeta[status]}</option>)}</select></label>
                   <label className="plan-wide-field"><span>下一步</span><input value={planForm.next_action} placeholder="例如：先拿到一小批脱敏样本并确认输出格式" onChange={(event) => setPlanForm((current) => ({ ...current, next_action: event.target.value }))} /></label>
                   <label className="plan-wide-field"><span>需求说明（可选）</span><textarea value={planForm.details} placeholder="记录背景、范围、验收标准、风险或依赖；不要填写敏感信息。" onChange={(event) => setPlanForm((current) => ({ ...current, details: event.target.value }))} /></label>
+                  <label className="plan-wide-field"><span>工作区（可选）</span><select value={planForm.workspace_id ?? ""} onChange={(event) => setPlanForm((current) => ({ ...current, workspace_id: event.target.value || null }))}><option value="">不关联工作区</option>{workspaces.map((workspace) => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}</select></label>
                   <label className="plan-wide-field"><span>GitHub repo (optional)</span><input value={planForm.github_repo ?? ""} placeholder="owner/repository; auto-import today's public commits" onChange={(event) => setPlanForm((current) => ({ ...current, github_repo: event.target.value || null }))} /></label>
                 </div>
                 <div className="plan-composer-actions">
@@ -1505,6 +1518,7 @@ export function LearningDashboard() {
                 </div>
                 <div className="plan-row-actions">
                   <button className="button" type="button" disabled={planSaving || timerInProgress} onClick={() => prepareTimerForPlan(plan)}>关联到计时器</button>
+                  {plan.workspace_id ? <Link className="button button-secondary" href={`/workspace/${plan.workspace_id}?plan=${plan.id}&date=${selectedDate}`}>打开工作台</Link> : <Link className="button button-secondary" href={`/workspaces?plan=${plan.id}`}>关联工作区</Link>}
                   <button className="button button-secondary" type="button" disabled={planSaving} onClick={() => unschedulePlan(plan)}>移出当天</button>
                   <select aria-label={`更新计划状态：${plan.title}`} value={plan.status} disabled={planSaving} onChange={(event) => void updateExistingPlan(plan, { status: event.target.value as PlanStatus }, `已更新「${plan.title}」状态。`)}>{(Object.keys(planStatusMeta) as PlanStatus[]).map((status) => <option key={status} value={status}>{planStatusMeta[status]}</option>)}</select>
                   <button className="button-quiet" type="button" disabled={planSaving} onClick={() => editPlan(plan)}>编辑</button>
