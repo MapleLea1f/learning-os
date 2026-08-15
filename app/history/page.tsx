@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 /* eslint-disable react-hooks/set-state-in-effect */
 
@@ -11,7 +11,7 @@ type LearningCategory = "java_ai" | "platform" | "foundation";
 type PlanNote = { blocker: string; reflection: string };
 type LearningEvent = { id: string; title: string; category: LearningCategory; minutes: number; planId?: string; source?: string };
 type EvidenceItem = { id: string; type: "text" | "link" | "github_commit"; text?: string; title?: string; url?: string; repo?: string; message?: string; commitUrl?: string; planId?: string; createdAt: string };
-type StoredDay = { id: string; user_id: string; record_date: string; events?: unknown; evidence_json?: unknown; evidence?: string; plan_notes?: unknown; completed?: boolean; java_ai_minutes?: number; platform_minutes?: number; foundation_minutes?: number };
+type StoredDay = { id: string; user_id: string; record_date: string; events?: unknown; evidence_json?: unknown; evidence?: string; plan_notes?: unknown; completed?: boolean; committed_at?: string | null; java_ai_minutes?: number; platform_minutes?: number; foundation_minutes?: number };
 type WorkPlan = { id: string; title: string };
 
 const pageSize = 12;
@@ -41,6 +41,7 @@ export default function HistoryPage() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(false);
   const [message, setMessage] = useState("");
+  const [filter, setFilter] = useState<"committed" | "draft" | "all">("committed");
   const configured = isSupabaseConfigured;
 
   useEffect(() => {
@@ -84,26 +85,27 @@ export default function HistoryPage() {
 
   const zh = (value: string) => value.split(" ").map((token) => /^[0-9a-fA-F]+$/.test(token) ? String.fromCodePoint(Number.parseInt(token, 16)) : token).join("");
   const ui = {
-    subtitle: zh("6bcf 5929 7684 6295 5165 3001 8bc1 636e 4e0e 590d 76d8"), history: zh("5386 53f2 6863 6848"), back: zh("8fd4 56de 4eca 65e5 884c 52a8"), intro: zh("6bcf 5929 7559 4e0b 4e86 4ec0 4e48 3001 6309 65e5 671f 6162 6162 56de 770b 3002"), description: zh("8fd9 91cc 8bb0 5f55 6bcf 5929 5b9e 9645 53d1 751f 7684 4e8b 4ef6 3001 5173 8054 8ba1 5212 3001 8bc1 636e 548c 590d 76d8 3001 4e0d 518d 8981 6c42 586b 5199 4e3b 76ee 6807 3002"), preview: zh("9884 89c8 6a21 5f0f"), previewText: zh("914d 7f6e  Supabase 5e76 767b 5f55 540e 3001 53ef 4ee5 67e5 770b 8de8 8bbe 5907 540c 6b65 7684 6bcf 65e5 6863 6848 3002"), checking: zh("6b63 5728 68c0 67e5 8d26 53f7 6388 6743 2026"), login: zh("767b 5f55 5e76 5b8c 6210 6388 6743 540e 3001 8fd9 91cc 4f1a 663e 793a 6bcf 5929 7684 8bb0 5f55 3002"), loading: zh("6b63 5728 52a0 8f7d 6bcf 65e5 6863 6848 2026"), events: zh("5f53 5929 4e8b 4ef6"), noEvents: zh("8fd9 4e00 5929 6ca1 6709 8bb0 5f55 5177 4f53 4e8b 4ef6 3002"), evidence: zh("8bc1 636e 4e0e 8ba1 5212 590d 76d8"), noEvidence: zh("8fd9 4e00 5929 6ca1 6709 7559 4e0b 8bc1 636e 3002"), noRecords: zh("8fd8 6ca1 6709 5df2 540c 6b65 7684 6bcf 65e5 6863 6848 3002"), openDay: zh("6253 5f00 5f53 5929 8bb0 5f55"), more: zh("52a0 8f7d 66f4 65e9 7684 8bb0 5f55"), loadingMore: zh("6b63 5728 52a0 8f7d 2026"), unlinked: zh("672a 5173 8054 8ba1 5212"), plan: zh("8ba1 5212"), text: zh("6587 5b57"), link: zh("94fe 63a5"), deletedPlan: zh("5df2 5220 9664 7684 8ba1 5212"), blocker: zh("5361 70b9 3a"), tomorrow: zh("660e 65e5 7b2c 4e00 6b65 3a"), closed: zh("5df2 5f62 6210 95ed 73af"), ongoing: zh("8fdb 884c 4e2d"), minutes: zh("5206 949f")
+    subtitle: zh("6bcf 5929 7684 6295 5165 3001 8bc1 636e 4e0e 590d 76d8"), history: zh("5386 53f2 6863 6848"), back: zh("8fd4 56de 4eca 65e5 884c 52a8"), intro: zh("6bcf 5929 7559 4e0b 4e86 4ec0 4e48 3001 6309 65e5 671f 6162 6162 56de 770b 3002"), description: zh("8fd9 91cc 8bb0 5f55 6bcf 5929 5b9e 9645 53d1 751f 7684 4e8b 4ef6 3001 5173 8054 8ba1 5212 3001 8bc1 636e 548c 590d 76d8 3001 4e0d 518d 8981 6c42 586b 5199 4e3b 76ee 6807 3002"), preview: zh("9884 89c8 6a21 5f0f"), previewText: zh("914d 7f6e  Supabase 5e76 767b 5f55 540e 3001 53ef 4ee5 67e5 770b 8de8 8bbe 5907 540c 6b65 7684 6bcf 65e5 6863 6848 3002"), checking: zh("6b63 5728 68c0 67e5 8d26 53f7 6388 6743 2026"), login: zh("767b 5f55 5e76 5b8c 6210 6388 6743 540e 3001 8fd9 91cc 4f1a 663e 793a 6bcf 5929 7684 8bb0 5f55 3002"), loading: zh("6b63 5728 52a0 8f7d 6bcf 65e5 6863 6848 2026"), events: zh("5f53 5929 4e8b 4ef6"), noEvents: zh("8fd9 4e00 5929 6ca1 6709 8bb0 5f55 5177 4f53 4e8b 4ef6 3002"), evidence: zh("8bc1 636e 4e0e 8ba1 5212 590d 76d8"), noEvidence: zh("8fd9 4e00 5929 6ca1 6709 7559 4e0b 8bc1 636e 3002"), noRecords: zh("8fd8 6ca1 6709 5df2 540c 6b65 7684 6bcf 65e5 6863 6848 3002"), openDay: zh("6253 5f00 5f53 5929 8bb0 5f55"), more: zh("52a0 8f7d 66f4 65e9 7684 8bb0 5f55"), loadingMore: zh("6b63 5728 52a0 8f7d 2026"), unlinked: zh("672a 5173 8054 8ba1 5212"), plan: zh("8ba1 5212"), text: zh("6587 5b57"), link: zh("94fe 63a5"), deletedPlan: zh("5df2 5220 9664 7684 8ba1 5212"), blocker: zh("5361 70b9 3a"), tomorrow: zh("660e 65e5 7b2c 4e00 6b65 3a"), closed: zh("5df2 5f62 6210 95ed 73af"), ongoing: zh("8fdb 884c 4e2d"), minutes: zh("5206 949f"), filter: zh("67e5 770b"), committed: zh("5df2 5165 8d26"), draft: zh("8349 7a3f"), all: zh("5168 90e8"), committedEmpty: zh("8fd8 6ca1 6709 5df2 5165 8d26 7684 8bb0 5f55 ff0c 8349 7a3f 63d0 4ea4 5165 8d26 540e 624d 4f1a 8fdb 5165 7edf 8ba1 3002"), draftEmpty: zh("6682 65e0 8349 7a3f 8bb0 5f55 3002")
   };
+  const visibleRecords = records.filter((record) => filter === "all" ? true : filter === "committed" ? Boolean(record.committed_at) : !record.committed_at);
   const content = !configured || !session || !authorized
     ? <section className="card archive-empty"><p className="empty-state">{configured && session ? message || ui.checking : ui.login}</p></section>
     : loading
       ? <section className="card archive-empty"><p className="empty-state">{ui.loading}</p></section>
       : <section className="daily-records">
-          {records.length ? records.map((record) => {
+          {visibleRecords.length ? visibleRecords.map((record) => {
             const events = normalizeEvents(record.events, record);
             const evidence = normalizeEvidence(record.evidence_json ?? record.evidence);
             const notes = normalizePlanNotes(record.plan_notes);
             return <article className="card daily-record" key={record.id}>
-              <div className="daily-record-head"><div><div className="eyebrow">{toDateLabel(record.record_date)}</div><h2>{record.record_date}</h2></div><div className="daily-record-total"><strong>{formatMinutes(totalMinutes(events))}</strong><span>{record.completed ? ui.closed : ui.ongoing}</span></div></div>
+              <div className="daily-record-head"><div><div className="eyebrow">{toDateLabel(record.record_date)}</div><h2>{record.record_date}</h2></div><div className="daily-record-total"><strong>{formatMinutes(totalMinutes(events))}</strong><span>{record.committed_at ? ui.committed : ui.draft}{ui.dot}{record.completed ? ui.closed : ui.ongoing}</span></div></div>
               <div className="daily-record-grid">
                 <section><h3>{ui.events}</h3>{events.length ? <div className="daily-event-list">{events.map((event) => <div className="daily-event" key={event.id}><div><strong>{event.title}</strong><span>{categoryLabels[event.category]}{event.planId ? " " + ui.dot + " " + (planMap.get(event.planId) ?? ui.plan) : " " + ui.dot + " " + ui.unlinked}</span></div><b>{formatMinutes(event.minutes)}</b></div>)}</div> : <p className="empty-state">{ui.noEvents}</p>}</section>
                 <section><h3>{ui.evidence}</h3>{evidence.length ? <div className="daily-evidence-list">{evidence.map((item) => <div className="daily-evidence" key={item.id}><span>{item.type === "github_commit" ? "GitHub " + ui.dot + " " + (item.repo ?? "") : item.type === "link" ? ui.link : ui.text}{item.planId ? " " + ui.dot + " " + (planMap.get(item.planId) ?? ui.plan) : " " + ui.dot + " " + ui.unlinked}</span><strong>{item.message ?? item.text ?? item.title ?? item.url}</strong></div>)}</div> : <p className="empty-state">{ui.noEvidence}</p>}{Object.entries(notes).length ? <div className="daily-notes">{Object.entries(notes).map(([planId, note]) => <div className="daily-note" key={planId}><strong>{planMap.get(planId) ?? ui.deletedPlan}</strong>{note.blocker && <p><b>{ui.blocker}</b>{note.blocker}</p>}{note.reflection && <p><b>{ui.tomorrow}</b>{note.reflection}</p>}</div>)}</div> : null}</section>
               </div>
               <div className="daily-record-footer"><Link className="button-quiet" href={"/?date=" + record.record_date}>{ui.openDay}</Link></div>
             </article>;
-          }) : <section className="card archive-empty"><p className="empty-state">{ui.noRecords}</p></section>}
+          }) : <section className="card archive-empty"><p className="empty-state">{filter === "committed" ? ui.committedEmpty : filter === "draft" ? ui.draftEmpty : ui.noRecords}</p></section>}
           {hasMore && <button className="button button-secondary load-more" type="button" disabled={loadingMore} onClick={() => void loadMore()}>{loadingMore ? ui.loadingMore : ui.more}</button>}
         </section>;
 
@@ -112,6 +114,7 @@ export default function HistoryPage() {
     <section className="page-intro"><div className="eyebrow">{ui.history}</div><h1>{ui.intro}</h1><p>{ui.description}</p></section>
     {!configured && <section className="notice"><strong>{ui.preview}{ui.colon}</strong>{ui.previewText}</section>}
     {message && <p className="feedback" role="status">{message}</p>}
+    <div className="history-filter"><span>{ui.filter}</span>{(["committed", "draft", "all"] as const).map((key) => <button key={key} type="button" className={`button button-secondary${filter === key ? " active" : ""}`} onClick={() => setFilter(key)}>{key === "committed" ? ui.committed : key === "draft" ? ui.draft : ui.all}</button>)}</div>
     {content}
   </main>;
 }

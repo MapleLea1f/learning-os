@@ -168,6 +168,9 @@ alter table public.learning_days
 alter table public.learning_days
   add column if not exists plan_notes jsonb not null default '{}'::jsonb;
 
+alter table public.learning_days
+  add column if not exists committed_at timestamptz;
+
 update public.learning_days
 set evidence_json = case
   when trim(evidence) = '' then '[]'::jsonb

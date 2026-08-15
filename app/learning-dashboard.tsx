@@ -65,6 +65,7 @@ type DayForm = {
   evidence: EvidenceItem[];
   planNotes: Record<string, PlanNote>;
   completed: boolean;
+  committedAt: string | null;
 };
 
 type StoredDay = DayForm & {
@@ -77,6 +78,7 @@ type StoredDay = DayForm & {
   events?: unknown;
   evidence_json?: unknown;
   plan_notes?: unknown;
+  committed_at?: string | null;
 };
 
 type PersistedTimer = {
@@ -185,6 +187,7 @@ function blankForm(): DayForm {
     evidence: [],
     planNotes: {},
     completed: false,
+    committedAt: null,
   };
 }
 
@@ -344,6 +347,7 @@ function formFromRecord(record: StoredDay): DayForm {
     evidence: normalizeEvidence(record.evidence_json ?? record.evidence),
     planNotes: normalizePlanNotes(record.plan_notes),
     completed: record.completed ?? false,
+    committedAt: typeof record.committed_at === "string" ? record.committed_at : null,
   };
 }
 
@@ -371,7 +375,8 @@ function isDayForm(value: unknown): value is DayForm {
     Array.isArray(form.events) && form.events.length === normalizeEvents(form.events).length &&
     Array.isArray(form.evidence) && form.evidence.length === normalizeEvidence(form.evidence).length &&
     !!form.planNotes && typeof form.planNotes === "object" &&
-    typeof form.completed === "boolean"
+    typeof form.completed === "boolean" &&
+    (typeof form.committedAt === "string" || form.committedAt === null || form.committedAt === undefined)
   );
 }
 
@@ -408,6 +413,7 @@ function readDraft(key: string): DayForm | null {
         evidence: normalizeEvidence(draft.evidence),
         planNotes: {},
         completed: draft.completed,
+        committedAt: null,
       };
     }
     return null;
@@ -573,6 +579,8 @@ export function LearningDashboard() {
   const [quickCategory, setQuickCategory] = useState<LearningCategory>("java_ai");
   const [quickMinutes, setQuickMinutes] = useState("");
   const [quickPlanId, setQuickPlanId] = useState<string | null>(null);
+  const [defaultEvidenceMinutes, setDefaultEvidenceMinutes] = useState(30);
+  const [defaultEvidenceCategory, setDefaultEvidenceCategory] = useState<LearningCategory>("java_ai");
   const [leetcodeUsername, setLeetcodeUsername] = useState("");
   const [leetcodeSubmissions, setLeetcodeSubmissions] = useState<LeetCodeSubmission[]>([]);
   const [leetcodeSelectedIds, setLeetcodeSelectedIds] = useState<string[]>([]);
@@ -603,8 +611,10 @@ export function LearningDashboard() {
   const todayTotal = totalMinutes(form.events);
   const mergedEvents = useMemo(() => mergeEventsForDisplay(form.events), [form.events]);
   const planReviewPlans = useMemo(() => plans.filter((plan) => form.events.some((event) => event.planId === plan.id) || form.evidence.some((item) => item.planId === plan.id) || form.planNotes[plan.id]), [form.events, form.evidence, form.planNotes, plans]);
-  const weekMinutes = weeklyRecords.reduce((sum, record) => sum + totalMinutes(eventsForRecord(record)), 0);
-  const completedDays = weeklyRecords.filter((record) => record.completed).length;
+  const weekMinutes = weeklyRecords.filter((record) => record.committed_at).reduce((sum, record) => sum + totalMinutes(eventsForRecord(record)), 0);
+  const completedDays = weeklyRecords.filter((record) => record.committed_at && record.completed).length;
+  const draftDays = weeklyRecords.filter((record) => !record.committed_at).length;
+  const linkedEvidenceCount = form.evidence.filter((item) => item.planId).length;
   const timerInProgress = timerSessionId !== null;
   const timerElapsed = timerElapsedBeforePause + (timerStartedAt ? timerNow - timerStartedAt : 0);
   const timerPlan = plans.find((plan) => plan.id === timerPlanId) ?? null;
@@ -649,6 +659,7 @@ export function LearningDashboard() {
         events: savedForm.events,
         evidence_json: savedForm.evidence,
         plan_notes: savedForm.planNotes,
+        committed_at: savedForm.committedAt ?? null,
         java_ai_minutes: minutes.java_ai,
         platform_minutes: minutes.platform,
         foundation_minutes: minutes.foundation,
@@ -887,6 +898,7 @@ export function LearningDashboard() {
           events: nextForm.events,
           evidence_json: nextForm.evidence,
           plan_notes: nextForm.planNotes,
+          committed_at: nextForm.committedAt ?? null,
           java_ai_minutes: minutes.java_ai,
           platform_minutes: minutes.platform,
           foundation_minutes: minutes.foundation,
@@ -995,11 +1007,13 @@ export function LearningDashboard() {
   }, [authorized, configured, currentDraftKey, queueAutosave, selectedDate, session]);
 
   function updateForm(update: (current: DayForm) => DayForm, immediate = false) {
-    const next = update(formRef.current);
-    formRef.current = next;
-    writeDraft(currentDraftKey, next);
-    setForm(next);
-    queueAutosave(next, selectedDate, immediate);
+    const current = formRef.current;
+    const next = update(current);
+    const result = current.committedAt ? { ...next, committedAt: null } : next;
+    formRef.current = result;
+    writeDraft(currentDraftKey, result);
+    setForm(result);
+    queueAutosave(result, selectedDate, immediate);
   }
 
   async function syncGithubEvidenceForPlans(dateKey: string, linkedPlans: WorkPlan[]) {
@@ -1388,6 +1402,36 @@ export function LearningDashboard() {
     if (saved) setMessage("已立即同步今天的记录。");
   }
 
+  async function commitDay() {
+    const linked = formRef.current.evidence.filter((item) => item.planId);
+    if (!linked.length) {
+      setMessage("提交入账需要至少一条已关联计划的证据。");
+      return;
+    }
+    let next = formRef.current;
+    if (!next.events.length) {
+      const planIds = [...new Set(linked.map((item) => item.planId).filter((planId): planId is string => Boolean(planId)))];
+      const defaultMinutes = Math.max(1, Math.round(Number(defaultEvidenceMinutes) || 30));
+      const defaultEvents: LearningEvent[] = planIds.map((planId) => ({
+        id: createEventId(),
+        title: "证据对应投入",
+        category: defaultEvidenceCategory,
+        minutes: defaultMinutes,
+        planId,
+        source: "manual",
+      }));
+      next = { ...next, events: defaultEvents };
+    }
+    const committed: DayForm = { ...next, committedAt: new Date().toISOString() };
+    formRef.current = committed;
+    writeDraft(currentDraftKey, committed);
+    setForm(committed);
+    queueAutosave(committed, selectedDate);
+    const saved = await flushAutosave();
+    if (saved) setMessage("已提交入账，该日计入统计。");
+    else setMessage("提交失败，已保留本地草稿，请稍后重试。");
+  }
+
 
   function renderPlanEffort(planId: string) {
     const effort = planEfforts[planId];
@@ -1692,8 +1736,18 @@ export function LearningDashboard() {
           </details>
 
           <div className="save-bar">
-            <label className="checkbox"><input type="checkbox" checked={form.completed} onChange={(event) => updateForm((current) => ({ ...current, completed: event.target.checked }))} /> 今天形成了最小闭环</label>
-            <button className="button" type="button" disabled={saving || dateChanging} onClick={saveDay}>{saving ? "正在同步…" : "立即同步"}</button>
+            <div className="save-bar-left">
+              <label className="checkbox"><input type="checkbox" checked={form.completed} onChange={(event) => updateForm((current) => ({ ...current, completed: event.target.checked }))} /> 今天形成了最小闭环</label>
+              {form.committedAt ? <span className="commit-badge committed">已入账</span> : (form.events.length > 0 || form.evidence.length > 0) && <span className="commit-badge draft">草稿</span>}
+            </div>
+            <div className="save-bar-actions">
+              {!form.events.length && linkedEvidenceCount > 0 && <div className="evidence-default-input">
+                <label><span>证据默认投入</span><input type="number" min={1} value={defaultEvidenceMinutes} onChange={(event) => setDefaultEvidenceMinutes(Number(event.target.value))} /></label>
+                <label><span>能力主线</span><select value={defaultEvidenceCategory} onChange={(event) => setDefaultEvidenceCategory(event.target.value as LearningCategory)}>{(Object.keys(categoryMeta) as LearningCategory[]).map((category) => <option key={category} value={category}>{categoryMeta[category].label}</option>)}</select></label>
+              </div>}
+              <button className="button" type="button" disabled={saving || dateChanging} onClick={commitDay}>提交入账</button>
+              <button className="button button-secondary" type="button" disabled={saving || dateChanging} onClick={saveDay}>{saving ? "正在同步…" : "立即同步"}</button>
+            </div>
           </div>
           {message && <p className="feedback" role="status">{message}</p>}
         </section>
@@ -1721,7 +1775,7 @@ export function LearningDashboard() {
                 </div>;
               })}
             </div>
-            <div className="week-total"><span>近 7 天正式记录</span><strong>{formatMinutes(weekMinutes)}</strong><span>{completedDays} 个闭环日</span></div>
+            <div className="week-total"><span>近 7 天已入账</span><strong>{formatMinutes(weekMinutes)}</strong><span>{completedDays} 个闭环日{draftDays ? ` · ${draftDays} 天草稿` : ""}</span></div>
           </section>
         </aside>
       </section>
