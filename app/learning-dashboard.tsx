@@ -1659,13 +1659,13 @@ export function LearningDashboard() {
             <div className="notes-grid">
               <div className="evidence-editor">
                 <div className="evidence-editor-head"><span>计划证据</span><button className="button-quiet" type="button" onClick={() => updateForm((current) => ({ ...current, evidence: [...current.evidence, { id: createEvidenceId(), type: "text", text: "", createdAt: new Date().toISOString() }] }))}>+ 添加证据</button></div>
-                {form.evidence.map((item, index) => <div className="evidence-item" key={item.id}>
-                  <select value={item.planId ?? ""} onChange={(event) => updateForm((current) => ({ ...current, evidence: current.evidence.map((entry, entryIndex) => entryIndex === index ? { ...entry, planId: event.target.value || undefined } : entry) }))}>
-                    <option value="">选择关联计划</option>{plans.map((plan) => <option key={plan.id} value={plan.id}>{plan.title}</option>)}
-                  </select>
-                  <textarea value={item.text ?? item.message ?? item.url ?? ""} placeholder={item.type === "github_commit" ? "GitHub 提交信息" : "提交、脚本输出、实验结果或文档链接"} readOnly={item.type === "github_commit"} onChange={(event) => updateForm((current) => ({ ...current, evidence: current.evidence.map((entry, entryIndex) => entryIndex === index ? { ...entry, text: event.target.value } : entry) }))} />
-                  <div className="evidence-item-meta"><span>{item.type === "github_commit" ? "GitHub · " + (item.repo ?? "") : item.type === "link" ? "链接" : "文字"}</span><button className="button-quiet" type="button" onClick={() => updateForm((current) => ({ ...current, evidence: current.evidence.filter((_, entryIndex) => entryIndex !== index) }))}>删除</button></div>
-                </div>)}
+                 {form.evidence.map((item, index) => <div className={`evidence-item${item.type === "github_commit" ? " evidence-item-github" : ""}`} key={item.id}>
+                   <select value={item.planId ?? ""} onChange={(event) => updateForm((current) => ({ ...current, evidence: current.evidence.map((entry, entryIndex) => entryIndex === index ? { ...entry, planId: event.target.value || undefined } : entry) }))}>
+                     <option value="">选择关联计划</option>{plans.map((plan) => <option key={plan.id} value={plan.id}>{plan.title}</option>)}
+                   </select>
+                   {item.type === "github_commit" ? <div className="evidence-github-compact"><span className="evidence-github-mark">↗</span><span className="evidence-github-copy"><strong>{item.title ?? item.message ?? "GitHub 提交"}</strong><small>{item.repo ?? "GitHub"}</small></span>{item.commitUrl && <a href={item.commitUrl} target="_blank" rel="noreferrer">查看</a>}</div> : <textarea value={item.text ?? item.message ?? item.url ?? ""} placeholder="提交、脚本输出、实验结果或文档链接" onChange={(event) => updateForm((current) => ({ ...current, evidence: current.evidence.map((entry, entryIndex) => entryIndex === index ? { ...entry, text: event.target.value } : entry) }))} />}
+                   <div className="evidence-item-meta"><span>{item.type === "github_commit" ? "GitHub · " + (item.repo ?? "") : item.type === "link" ? "链接" : "文字"}</span><button className="button-quiet" type="button" onClick={() => updateForm((current) => ({ ...current, evidence: current.evidence.filter((_, entryIndex) => entryIndex !== index) }))}>删除</button></div>
+                 </div>)}
                 {!form.evidence.length && <p className="empty-state">还没有证据。先选择计划、再添加提交、文档或结果。</p>}
                 <a className="evidence-github-link" href={"/github?date=" + selectedDate}>打开 GitHub 证据页 →</a>
               </div>
