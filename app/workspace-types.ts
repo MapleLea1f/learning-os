@@ -44,6 +44,19 @@ export type WorkspaceExecution = {
   created_at: string;
   updated_at: string;
 };
+export type WorkspaceExecutionStepStatus = "pending" | "in_progress" | "completed" | "blocked" | "cancelled";
+
+export type WorkspaceExecutionStep = {
+  id: string;
+  execution_id: string;
+  workspace_id: string;
+  user_id: string;
+  title: string;
+  status: WorkspaceExecutionStepStatus;
+  position: number;
+  created_at: string;
+  updated_at: string;
+};
 
 export type WorkspaceResource = {
   id: string;

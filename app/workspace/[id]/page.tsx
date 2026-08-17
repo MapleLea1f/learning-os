@@ -7,13 +7,15 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import type { Session } from "@supabase/supabase-js";
 import { getSupabase, isSupabaseConfigured } from "../../supabase-client";
-import type { Workspace, WorkspaceResource, WorkspaceResourceType, WorkspaceTask, WorkspaceTaskPriority, WorkspaceTaskStatus } from "../../workspace-types";
+import type { Workspace, WorkspaceExecution, WorkspaceExecutionStatus, WorkspaceExecutionStep, WorkspaceExecutionStepStatus, WorkspaceResource, WorkspaceResourceType, WorkspaceTask, WorkspaceTaskPriority, WorkspaceTaskStatus } from "../../workspace-types";
 
-type WorkPlan = { id: string; title: string; status: string; workspace_id: string | null };
+type WorkPlan = { id: string; title: string; status: string; workspace_id: string | null; details: string };
 type WorkspaceEvidence = { id: string; evidence_type: string; title: string; content: string; metadata: { commit?: string; files?: string[] }; observed_at: string };
 
 const priorityLabels: Record<WorkspaceTaskPriority, string> = { high: "高", medium: "中", low: "低" };
 const statusLabels: Record<WorkspaceTaskStatus, string> = { todo: "待处理", in_progress: "进行中", completed: "已完成", blocked: "已阻塞" };
+const executionStatusLabels: Record<WorkspaceExecutionStatus, string> = { in_progress: "进行中", completed: "已完成", blocked: "已阻塞", cancelled: "已取消" };
+const stepStatusLabels: Record<WorkspaceExecutionStepStatus, string> = { pending: "待处理", in_progress: "进行中", completed: "已完成", blocked: "已阻塞", cancelled: "已取消" };
 const resourceLabels: Record<WorkspaceResourceType, string> = { link: "网页链接", chatgpt: "历史 ChatGPT 链接（旧）", deepseek: "网页链接（旧）", local_path: "本地目录", file_output: "产出文件（旧）" };
 const resourceOptions = [["link", "网页链接"], ["local_path", "本地目录"]] as const;
 type PairingResult = { ok?: boolean; cwd?: string; usedFallback?: boolean; error?: string };
@@ -40,6 +42,15 @@ async function pickLocalPath(kind: "file" | "directory") {
   if (!response.ok) throw new Error(payload.error || "选择本地路径失败。");
   return payload.path || "";
 }
+function formatDuration(startedAt: string, finishedAt: string | null) {
+  const end = finishedAt ? new Date(finishedAt).getTime() : Date.now();
+  const minutes = Math.max(0, Math.round((end - new Date(startedAt).getTime()) / 60000));
+  if (minutes < 1) return "不足 1 分钟";
+  if (minutes < 60) return `${minutes} 分钟`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest ? `${hours} 小时 ${rest} 分钟` : `${hours} 小时`;
+}
 export default function WorkspaceDetailPage() {
   const params = useParams<{ id: string }>();
   const workspaceId = params.id;
@@ -50,6 +61,8 @@ export default function WorkspaceDetailPage() {
   const [resources, setResources] = useState<WorkspaceResource[]>([]);
   const [evidence, setEvidence] = useState<WorkspaceEvidence[]>([]);
   const [plans, setPlans] = useState<WorkPlan[]>([]);
+  const [executions, setExecutions] = useState<WorkspaceExecution[]>([]);
+  const [steps, setSteps] = useState<WorkspaceExecutionStep[]>([]);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState("");
   const [pairingLoading, setPairingLoading] = useState(false);
@@ -68,6 +81,15 @@ export default function WorkspaceDetailPage() {
 
   const activeTasks = useMemo(() => tasks.filter((task) => task.status !== "completed"), [tasks]);
   const completedTasks = useMemo(() => tasks.filter((task) => task.status === "completed"), [tasks]);
+  const stepsByExecution = useMemo(() => {
+    const grouped = new Map<string, WorkspaceExecutionStep[]>();
+    for (const step of steps) {
+      const list = grouped.get(step.execution_id) ?? [];
+      list.push(step);
+      grouped.set(step.execution_id, list);
+    }
+    return grouped;
+  }, [steps]);
 
   useEffect(() => {
     const client = getSupabase();
@@ -86,12 +108,14 @@ export default function WorkspaceDetailPage() {
       setLoading(true);
       const { data: access } = await client.from("allowed_users").select("user_id").eq("user_id", session?.user.id).maybeSingle();
       if (!access) { setAuthorized(false); setLoading(false); return; }
-      const [{ data: workspaceData, error: workspaceError }, { data: taskData }, { data: resourceData }, { data: evidenceData }, { data: planData }] = await Promise.all([
+      const [{ data: workspaceData, error: workspaceError }, { data: taskData }, { data: resourceData }, { data: evidenceData }, { data: planData }, { data: executionData }, { data: stepData }] = await Promise.all([
         client.from("workspaces").select("*").eq("id", workspaceId).single(),
         client.from("workspace_tasks").select("*").eq("workspace_id", workspaceId).order("status", { ascending: true }).order("priority", { ascending: true }).order("updated_at", { ascending: false }),
         client.from("workspace_resources").select("*").eq("workspace_id", workspaceId).order("created_at", { ascending: false }),
         client.from("workspace_evidence").select("id,evidence_type,title,content,metadata,observed_at").eq("workspace_id", workspaceId).order("observed_at", { ascending: false }).limit(12),
-        client.from("work_plans").select("id,title,status,workspace_id").eq("workspace_id", workspaceId).order("updated_at", { ascending: false }),
+        client.from("work_plans").select("id,title,status,workspace_id,details").eq("workspace_id", workspaceId).order("updated_at", { ascending: false }),
+        client.from("workspace_executions").select("*").eq("workspace_id", workspaceId).order("started_at", { ascending: false }).limit(10),
+        client.from("workspace_execution_steps").select("*").eq("workspace_id", workspaceId).order("position", { ascending: true }).limit(100),
       ]);
       if (cancelled) return;
       setAuthorized(true);
@@ -101,6 +125,8 @@ export default function WorkspaceDetailPage() {
       setResources((resourceData as WorkspaceResource[] | null) ?? []);
       setEvidence((evidenceData as WorkspaceEvidence[] | null) ?? []);
       setPlans((planData as WorkPlan[] | null) ?? []);
+      setExecutions((executionData as WorkspaceExecution[] | null) ?? []);
+      setSteps((stepData as WorkspaceExecutionStep[] | null) ?? []);
       setLoading(false);
     }
     void load();
@@ -253,6 +279,7 @@ export default function WorkspaceDetailPage() {
     <section className="workspace-detail-grid">
       <div className="workspace-main-column">
         <section className="workspace-card"><div className="workspace-card-head"><div><span className="eyebrow">执行清单</span><h2>待办事项</h2></div><span>{activeTasks.length} 个未完成</span></div><form className="workspace-task-form" onSubmit={createTask}><input value={taskTitle} placeholder="添加一个需要推进的事项" onChange={(event) => setTaskTitle(event.target.value)} /><select value={taskPriority} onChange={(event) => setTaskPriority(event.target.value as WorkspaceTaskPriority)}>{Object.entries(priorityLabels).map(([value, label]) => <option key={value} value={value}>{label}优先级</option>)}</select><input type="date" value={taskDueDate} onChange={(event) => setTaskDueDate(event.target.value)} /><button className="button" type="submit" disabled={!taskTitle.trim()}>添加待办</button></form><div className="workspace-task-list">{activeTasks.map((task) => <article className={`workspace-task-row priority-${task.priority}`} key={task.id}>{editingTaskId === task.id ? <div className="workspace-task-edit"><input autoFocus value={editingTaskTitle} onChange={(event) => setEditingTaskTitle(event.target.value)} /><button className="button button-secondary" type="button" onClick={() => { void updateTask(task, { title: editingTaskTitle.trim() || task.title }); setEditingTaskId(null); }}>保存</button><button className="button-quiet" type="button" onClick={() => setEditingTaskId(null)}>取消</button></div> : <><input className="workspace-task-check" type="checkbox" checked={task.status === "completed"} onChange={() => void updateTask(task, { status: task.status === "completed" ? "todo" : "completed" })} /><div className="workspace-task-copy"><strong>{task.title}</strong><span>{priorityLabels[task.priority]}优先级 · {statusLabels[task.status]}{task.due_date ? ` · 截止 ${task.due_date}` : ""}</span>{task.notes && <small>{task.notes}</small>}</div><select value={task.status} onChange={(event) => void updateTask(task, { status: event.target.value as WorkspaceTaskStatus })}>{Object.entries(statusLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><button className="button-quiet" type="button" onClick={() => { setEditingTaskId(task.id); setEditingTaskTitle(task.title); }}>编辑</button><button className="button-quiet danger" type="button" onClick={() => void deleteTask(task)}>删除</button></>}</article>)}{!activeTasks.length && <p className="workspace-empty">还没有未完成待办，可以从一个最小动作开始。</p>}</div>{completedTasks.length > 0 && <details className="workspace-completed"><summary>已完成 {completedTasks.length} 项</summary>{completedTasks.map((task) => <div className="workspace-completed-row" key={task.id}><span>✓</span><strong>{task.title}</strong><button className="button-quiet" type="button" onClick={() => void updateTask(task, { status: "todo" })}>恢复</button></div>)}</details>}</section>
+        <section className="workspace-card"><div className="workspace-card-head"><div><span className="eyebrow">执行记录</span><h2>步骤与验证</h2></div><span>{executions.length} 条</span></div><div className="workspace-execution-list">{executions.map((execution) => { const executionSteps = stepsByExecution.get(execution.id) ?? []; return <article className="workspace-execution-row" key={execution.id}><div className="workspace-execution-head"><strong>{execution.title}</strong><span className={`execution-status execution-${execution.status}`}>{executionStatusLabels[execution.status]}</span></div><small>{new Date(execution.started_at).toLocaleString("zh-CN")} · {execution.finished_at ? `用时 ${formatDuration(execution.started_at, execution.finished_at)}` : `进行中 ${formatDuration(execution.started_at, null)}`}</small>{executionSteps.length > 0 ? <ol className="workspace-step-list">{executionSteps.map((step) => <li className={`step-${step.status}`} key={step.id}><span>{step.status === "completed" ? "✓" : step.status === "in_progress" ? "●" : step.status === "blocked" ? "!" : "○"}</span><span>{step.title}</span><span className="step-status-label">{stepStatusLabels[step.status]}</span></li>)}</ol> : <small className="workspace-step-empty">暂无步骤</small>}</article>; })}{!executions.length && <p className="workspace-empty">连接本地连接器后，Codex 会话的执行步骤和验证记录会显示在这里。</p>}</div></section>
         <section className="workspace-card">
           <div className="workspace-card-head"><div><span className="eyebrow">关联入口</span><h2>资源</h2></div><span>{resources.length} 项</span></div>
           <form className="workspace-resource-form" onSubmit={createResource}>
@@ -266,7 +293,7 @@ export default function WorkspaceDetailPage() {
         </section>
         <section className="workspace-card"><div className="workspace-card-head"><div><span className="eyebrow">Git 提交证据</span><h2>最近的提交证据</h2></div><span>{evidence.length} 条</span></div><div className="workspace-evidence-list">{evidence.map((item) => <article className="workspace-evidence-row" key={item.id}><div><strong>{item.title}</strong><small>{item.content} · {new Date(item.observed_at).toLocaleString("zh-CN")}</small>{item.metadata?.files?.length ? <small>涉及 {item.metadata.files.slice(0, 3).join(", ")}{item.metadata.files.length > 3 ? ` 等 ${item.metadata.files.length} 个文件` : ""}</small> : null}</div>{item.metadata?.commit ? <code>{item.metadata.commit.slice(0, 8)}</code> : null}</article>)}{!evidence.length && <p className="workspace-empty">连接本地连接器后运行 evidence scan，同步 Git 提交。</p>}</div></section>
       </div>
-      <aside className="workspace-side-column"><section className="workspace-card"><div className="workspace-card-head"><div><span className="eyebrow">关联计划</span><h2>计划</h2></div><span>{plans.length} 个</span></div>{plans.map((plan) => <Link className="workspace-plan-row" href="/" key={plan.id}><strong>{plan.title}</strong><span>{plan.status}</span></Link>)}{!plans.length && <p className="workspace-empty">还没有关联计划。</p>}</section><section className="workspace-card workspace-note-card"><span className="eyebrow">下一阶段</span><p>Codex 会读取待办，并记录步骤、验证和 Git 证据。</p></section></aside>
+      <aside className="workspace-side-column"><section className="workspace-card"><div className="workspace-card-head"><div><span className="eyebrow">关联计划</span><h2>计划</h2></div><span>{plans.length} 个</span></div>{plans.map((plan) => <Link className="workspace-plan-row" href="/" key={plan.id}><strong>{plan.title}</strong><span>{plan.status}</span><p className="workspace-plan-details">{plan.details || "暂无需求说明"}</p></Link>)}{!plans.length && <p className="workspace-empty">还没有关联计划。</p>}</section><section className="workspace-card workspace-note-card"><span className="eyebrow">联动说明</span><p>连接本地连接器后，Codex 会话会读取待办，并在此记录执行步骤、验证命令和 Git 证据。</p></section></aside>
     </section>
   </main>;
 }

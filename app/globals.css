@@ -534,6 +534,24 @@ h1 { max-width: 700px; position: relative; z-index: 1; margin: 0; color: #193e2d
 .workspace-plan-row { display: grid; gap: 4px; border-bottom: 1px solid #edf2ec; padding: 10px 0; text-decoration: none; }
 .workspace-plan-row strong { color: #315544; font-size: 13px; }
 .workspace-plan-row span { color: #829087; font-size: 11px; }
+.workspace-plan-details { margin: 0; color: #718075; font-size: 12px; line-height: 1.6; white-space: pre-wrap; }
+.workspace-execution-list { display: grid; gap: 10px; }
+.workspace-execution-row { display: grid; gap: 6px; border-bottom: 1px solid #edf2ec; padding: 10px 0; }
+.workspace-execution-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.workspace-execution-head strong { color: #315544; font-size: 13px; }
+.workspace-execution-row > small { color: #829087; font-size: 11px; }
+.execution-status { border-radius: 999px; padding: 2px 8px; color: #315544; font-size: 11px; background: #e8f2e8; }
+.execution-status.execution-in_progress { color: #2f7653; background: #e8f2e8; }
+.execution-status.execution-blocked { color: #a05e2c; background: #fdf0e2; }
+.execution-status.execution-cancelled { color: #8a5a52; background: #f3e9e7; }
+.workspace-step-list { display: grid; gap: 4px; margin: 4px 0 0; padding: 0; list-style: none; }
+.workspace-step-list li { display: flex; align-items: center; gap: 8px; color: #5e7065; font-size: 12px; }
+.workspace-step-list li > span:first-child { width: 16px; color: #829087; }
+.workspace-step-list li.step-completed > span:first-child { color: #2f7653; }
+.workspace-step-list li.step-in_progress > span:first-child { color: #a07c2c; }
+.workspace-step-list li.step-blocked > span:first-child { color: #b45445; }
+.workspace-step-list .step-status-label { margin-left: auto; color: #829087; font-size: 11px; }
+.workspace-step-empty { color: #829087; font-size: 11px; }
 .workspace-note-card p { margin: 10px 0 0; color: #718075; font-size: 12px; line-height: 1.7; }
 @media (max-width: 760px) { .workspace-header, .workspace-detail-grid { grid-template-columns: 1fr; flex-direction: column; } .workspace-form-grid, .workspace-task-form, .workspace-resource-form { grid-template-columns: 1fr; } .workspace-wide-field, .workspace-resource-form textarea { grid-column: auto; } .workspace-task-row { grid-template-columns: auto minmax(0, 1fr) auto; } .workspace-task-row select { grid-column: 2; } .workspace-task-row .button-quiet { grid-column: 3; } }
 
