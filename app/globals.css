@@ -268,6 +268,9 @@ h1 { max-width: 700px; position: relative; z-index: 1; margin: 0; color: #193e2d
   .timer-builder { grid-template-columns: 1fr; }
   .save-bar-actions { justify-content: flex-end; width: 100%; }
   .evidence-default-input, .history-filter { flex-wrap: wrap; }
+  .evidence-item-links { grid-template-columns: 1fr; }
+  .submit-dialog-actions { align-items: flex-start; flex-direction: column; }
+  .submit-dialog-actions > div { width: 100%; justify-content: flex-end; }
   .timer-running { min-height: 44px; }
   .plan-library-head, .plan-composer-head, .plan-section-head, .timer-plan-link { align-items: flex-start; flex-direction: column; }
   .plan-head-actions { width: 100%; }
@@ -335,6 +338,40 @@ h1 { max-width: 700px; position: relative; z-index: 1; margin: 0; color: #193e2d
 .evidence-github-compact a:hover { color: #2f6b4a; text-decoration: underline; }
 .evidence-github-link { color: #2f6b4a; font-size: 12px; font-weight: 700; text-decoration: none; }
 .evidence-github-link:hover { text-decoration: underline; }
+.evidence-item-links { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.committed-panel { margin-top: 14px; border: 1px solid #bcdac3; border-radius: 12px; padding: 12px; background: #f4fbf5; }
+.committed-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: #315544; font-size: 12px; font-weight: 700; }
+.committed-panel-head small { color: #829087; font-size: 11px; font-weight: 400; }
+.committed-list { display: grid; gap: 2px; margin-top: 8px; }
+.committed-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; border-bottom: 1px solid #dcebe0; padding: 6px 2px; }
+.committed-row:last-child { border-bottom: 0; }
+.committed-row > span { display: grid; min-width: 0; gap: 2px; }
+.committed-row strong { overflow: hidden; color: #315544; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.committed-row small { color: #829087; font-size: 10px; }
+.committed-row .button-quiet { font-size: 11px; }
+.submit-overlay { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 20px; background: rgba(20, 40, 30, .42); }
+.submit-dialog { display: grid; gap: 14px; width: min(680px, 100%); max-height: 84vh; overflow: auto; border: 1px solid #dbe7dc; border-radius: 18px; padding: 20px; background: #fffefa; box-shadow: 0 18px 50px rgba(20, 50, 35, .22); }
+.submit-dialog-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.submit-dialog-head h2 { margin: 4px 0 0; color: #244f3b; font-size: 20px; }
+.submit-dialog-head p { margin: 6px 0 0; color: #718075; font-size: 12px; }
+.submit-dialog-body { display: grid; gap: 14px; }
+.submit-section { display: grid; gap: 8px; }
+.submit-section-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: #829087; font-size: 11px; }
+.submit-section-head strong { color: #315544; font-size: 13px; }
+.submit-item { display: grid; gap: 6px; border: 1px solid #e0e9df; border-radius: 10px; padding: 10px; background: #fbfdfb; }
+.submit-item.disabled { opacity: .62; }
+.submit-item-main, .submit-evidence { display: flex; align-items: center; gap: 8px; color: #3d5f4d; font-size: 12px; cursor: pointer; }
+.submit-item-main input, .submit-evidence input { flex: 0 0 auto; accent-color: #2f7653; }
+.submit-item-main span, .submit-item-plain span { display: grid; min-width: 0; gap: 2px; }
+.submit-item-main strong, .submit-item-plain strong { overflow: hidden; color: #233b2e; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.submit-item-main small, .submit-item-plain small { color: #829087; font-size: 11px; }
+.submit-evidence { padding-left: 26px; }
+.submit-evidence span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.submit-item-hint { color: #b08a4a; font-size: 11px; font-style: normal; }
+.submit-item-plain { display: flex; align-items: center; gap: 8px; padding: 9px 10px; }
+.submit-default-input { padding: 4px 0 2px; }
+.submit-dialog-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; border-top: 1px solid #e6ece4; padding-top: 12px; color: #718075; font-size: 12px; }
+.submit-dialog-actions > div { display: flex; gap: 8px; }
 .github-shell { min-height: 100vh; padding: 42px clamp(22px, 5vw, 80px); color: #233b2e; background: #f4f8f2; }
 .github-header, .github-toolbar, .github-import-bar, .github-card { border: 1px solid #dbe7dc; border-radius: 18px; background: #fffefa; box-shadow: 0 12px 34px rgba(47, 80, 57, .07); }
 .github-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; max-width: 1180px; margin: 0 auto 16px; padding: 28px 30px; }

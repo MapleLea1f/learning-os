@@ -19,7 +19,9 @@ type EvidenceItem = {
   repo?: string;
   message?: string;
   commitUrl?: string;
+  eventId?: string;
   planId?: string;
+  committed?: boolean;
   createdAt: string;
 };
 
@@ -32,6 +34,7 @@ type LearningEvent = {
   minutes: number;
   planId?: string;
   source?: "timer" | "manual" | "leetcode";
+  committed?: boolean;
 };
 
 type PlanPriority = "high" | "medium" | "low";
@@ -236,6 +239,7 @@ function normalizeEvents(value: unknown): LearningEvent[] {
       minutes,
       source,
       ...(planId ? { planId } : {}),
+      ...(event.committed === true ? { committed: true } : {}),
     }];
   });
 }
@@ -250,7 +254,7 @@ function normalizeEvidence(value: unknown): EvidenceItem[] {
       const url = typeof raw.url === "string" ? raw.url.trim() : "";
       const message = typeof raw.message === "string" ? raw.message.trim() : "";
       if ((type === "text" && !text) || (type === "link" && !url) || (type === "github_commit" && !message)) return [];
-      return [{ id: typeof raw.id === "string" && raw.id ? raw.id : `evidence-${index}`, type, ...(text ? { text } : {}), ...(typeof raw.title === "string" && raw.title.trim() ? { title: raw.title.trim() } : {}), ...(url ? { url } : {}), ...(typeof raw.repo === "string" && raw.repo.trim() ? { repo: raw.repo.trim() } : {}), ...(message ? { message } : {}), ...(typeof raw.commitUrl === "string" && raw.commitUrl.trim() ? { commitUrl: raw.commitUrl.trim() } : {}), ...(typeof raw.planId === "string" && raw.planId ? { planId: raw.planId } : {}), createdAt: typeof raw.createdAt === "string" ? raw.createdAt : new Date().toISOString() }];
+      return [{ id: typeof raw.id === "string" && raw.id ? raw.id : `evidence-${index}`, type, ...(text ? { text } : {}), ...(typeof raw.title === "string" && raw.title.trim() ? { title: raw.title.trim() } : {}), ...(url ? { url } : {}), ...(typeof raw.repo === "string" && raw.repo.trim() ? { repo: raw.repo.trim() } : {}), ...(message ? { message } : {}), ...(typeof raw.commitUrl === "string" && raw.commitUrl.trim() ? { commitUrl: raw.commitUrl.trim() } : {}), ...(typeof raw.eventId === "string" && raw.eventId ? { eventId: raw.eventId } : {}), ...(typeof raw.planId === "string" && raw.planId ? { planId: raw.planId } : {}), ...(raw.committed === true ? { committed: true } : {}), createdAt: typeof raw.createdAt === "string" ? raw.createdAt : new Date().toISOString() }];
     });
   }
   if (typeof value === "string" && value.trim()) {
@@ -525,7 +529,7 @@ function clearPersistedTimer() {
 
 function planEffortFromRecords(records: Array<Pick<StoredDay, "record_date" | "events">>): Record<string, PlanEffort> {
   return records.reduce<Record<string, PlanEffort>>((totals, record) => {
-    normalizeEvents(record.events).forEach((event) => {
+    normalizeEvents(record.events).filter((event) => event.committed === true).forEach((event) => {
       if (!event.planId) return;
       const current = totals[event.planId] ?? { minutes: 0, entries: [] };
       current.minutes += event.minutes;
@@ -581,6 +585,9 @@ export function LearningDashboard() {
   const [quickPlanId, setQuickPlanId] = useState<string | null>(null);
   const [defaultEvidenceMinutes, setDefaultEvidenceMinutes] = useState(30);
   const [defaultEvidenceCategory, setDefaultEvidenceCategory] = useState<LearningCategory>("java_ai");
+  const [submitOpen, setSubmitOpen] = useState(false);
+  const [submitEventIds, setSubmitEventIds] = useState<string[]>([]);
+  const [submitEvidenceIds, setSubmitEvidenceIds] = useState<string[]>([]);
   const [leetcodeUsername, setLeetcodeUsername] = useState("");
   const [leetcodeSubmissions, setLeetcodeSubmissions] = useState<LeetCodeSubmission[]>([]);
   const [leetcodeSelectedIds, setLeetcodeSelectedIds] = useState<string[]>([]);
@@ -607,14 +614,18 @@ export function LearningDashboard() {
     () => draftKey(session?.user.id, selectedDate),
     [selectedDate, session?.user.id],
   );
-  const todayMinutes = useMemo(() => eventMinutes(form.events), [form.events]);
-  const todayTotal = totalMinutes(form.events);
-  const mergedEvents = useMemo(() => mergeEventsForDisplay(form.events), [form.events]);
+  const activeEvents = useMemo(() => form.events.filter((event) => !event.committed), [form.events]);
+  const committedEvents = useMemo(() => form.events.filter((event) => event.committed), [form.events]);
+  const activeEvidence = useMemo(() => form.evidence.filter((item) => !item.committed), [form.evidence]);
+  const committedEvidence = useMemo(() => form.evidence.filter((item) => item.committed), [form.evidence]);
+  const standaloneEvidence = useMemo(() => activeEvidence.filter((item) => !item.eventId && item.planId), [activeEvidence]);
+  const todayMinutes = useMemo(() => eventMinutes(activeEvents), [activeEvents]);
+  const todayTotal = totalMinutes(activeEvents);
+  const mergedEvents = useMemo(() => mergeEventsForDisplay(activeEvents), [activeEvents]);
   const planReviewPlans = useMemo(() => plans.filter((plan) => form.events.some((event) => event.planId === plan.id) || form.evidence.some((item) => item.planId === plan.id) || form.planNotes[plan.id]), [form.events, form.evidence, form.planNotes, plans]);
-  const weekMinutes = weeklyRecords.filter((record) => record.committed_at).reduce((sum, record) => sum + totalMinutes(eventsForRecord(record)), 0);
+  const weekMinutes = weeklyRecords.filter((record) => record.committed_at).reduce((sum, record) => sum + totalMinutes(eventsForRecord(record).filter((event) => event.committed === true)), 0);
   const completedDays = weeklyRecords.filter((record) => record.committed_at && record.completed).length;
   const draftDays = weeklyRecords.filter((record) => !record.committed_at).length;
-  const linkedEvidenceCount = form.evidence.filter((item) => item.planId).length;
   const timerInProgress = timerSessionId !== null;
   const timerElapsed = timerElapsedBeforePause + (timerStartedAt ? timerNow - timerStartedAt : 0);
   const timerPlan = plans.find((plan) => plan.id === timerPlanId) ?? null;
@@ -1007,13 +1018,11 @@ export function LearningDashboard() {
   }, [authorized, configured, currentDraftKey, queueAutosave, selectedDate, session]);
 
   function updateForm(update: (current: DayForm) => DayForm, immediate = false) {
-    const current = formRef.current;
-    const next = update(current);
-    const result = current.committedAt ? { ...next, committedAt: null } : next;
-    formRef.current = result;
-    writeDraft(currentDraftKey, result);
-    setForm(result);
-    queueAutosave(result, selectedDate, immediate);
+    const next = update(formRef.current);
+    formRef.current = next;
+    writeDraft(currentDraftKey, next);
+    setForm(next);
+    queueAutosave(next, selectedDate, immediate);
   }
 
   async function syncGithubEvidenceForPlans(dateKey: string, linkedPlans: WorkPlan[]) {
@@ -1187,6 +1196,26 @@ export function LearningDashboard() {
 
   function unschedulePlan(plan: WorkPlan) {
     void updateExistingPlan(plan, { scheduled_date: null }, `已将「${plan.title}」移出当天安排。`);
+  }
+
+  async function deletePlan(plan: WorkPlan) {
+    if (!window.confirm(`确认删除计划「${plan.title}」？历史记录中的关联内容会保留，但计划本身将被移除。`)) return;
+    const client = getPlanClient();
+    if (!client || !session) return;
+    setPlanSaving(true);
+    const { error } = await client.from("work_plans").delete().eq("id", plan.id).eq("user_id", session.user.id);
+    setPlanSaving(false);
+    if (error) {
+      setMessage(`删除计划失败：${error.message}`);
+      return;
+    }
+    setPlans((current) => current.filter((item) => item.id !== plan.id));
+    if (editingPlanId === plan.id) {
+      setPlanComposerOpen(false);
+      setEditingPlanId(null);
+    }
+    if (timerPlanId === plan.id) setTimerPlanId(null);
+    setMessage(`已删除计划「${plan.title}」。`);
   }
 
   function prepareTimerForPlan(plan: WorkPlan) {
@@ -1402,34 +1431,100 @@ export function LearningDashboard() {
     if (saved) setMessage("已立即同步今天的记录。");
   }
 
-  async function commitDay() {
-    const linked = formRef.current.evidence.filter((item) => item.planId);
-    if (!linked.length) {
-      setMessage("提交入账需要至少一条已关联计划的证据。");
+  function openSubmitDialog() {
+    const eventIds = activeEvents.filter((event) => activeEvidence.some((item) => item.eventId === event.id)).map((event) => event.id);
+    const evidenceIds = activeEvidence.filter((item) => (item.eventId && eventIds.includes(item.eventId)) || (!item.eventId && item.planId)).map((item) => item.id);
+    setSubmitEventIds(eventIds);
+    setSubmitEvidenceIds(evidenceIds);
+    setSubmitOpen(true);
+  }
+
+  function closeSubmitDialog() {
+    setSubmitOpen(false);
+    setSubmitEventIds([]);
+    setSubmitEvidenceIds([]);
+  }
+
+  function toggleSubmitEvent(id: string) {
+    const linkedIds = activeEvidence.filter((item) => item.eventId === id).map((item) => item.id);
+    if (submitEventIds.includes(id)) {
+      setSubmitEventIds((current) => current.filter((eventId) => eventId !== id));
+      setSubmitEvidenceIds((current) => current.filter((evidenceId) => !linkedIds.includes(evidenceId)));
+    } else {
+      setSubmitEventIds((current) => [...current, id]);
+      setSubmitEvidenceIds((current) => [...new Set([...current, ...linkedIds])]);
+    }
+  }
+
+  function toggleSubmitEvidence(id: string) {
+    setSubmitEvidenceIds((current) => current.includes(id) ? current.filter((evidenceId) => evidenceId !== id) : [...current, id]);
+  }
+
+  async function submitSelected() {
+    const selectedEvents = activeEvents.filter((event) => submitEventIds.includes(event.id));
+    for (const event of selectedEvents) {
+      const linked = activeEvidence.filter((item) => item.eventId === event.id);
+      if (!linked.some((item) => submitEvidenceIds.includes(item.id))) {
+        setMessage(`「${event.title}」还没有关联证据，无法提交；请先补充证据或取消选择。`);
+        return;
+      }
+    }
+    const selectedStandalone = standaloneEvidence.filter((item) => submitEvidenceIds.includes(item.id));
+    if (!selectedEvents.length && !selectedStandalone.length) {
+      setMessage("请选择要提交的事件或独立证据。");
       return;
     }
-    let next = formRef.current;
-    if (!next.events.length) {
-      const planIds = [...new Set(linked.map((item) => item.planId).filter((planId): planId is string => Boolean(planId)))];
-      const defaultMinutes = Math.max(1, Math.round(Number(defaultEvidenceMinutes) || 30));
-      const defaultEvents: LearningEvent[] = planIds.map((planId) => ({
-        id: createEventId(),
-        title: "证据对应投入",
-        category: defaultEvidenceCategory,
-        minutes: defaultMinutes,
-        planId,
-        source: "manual",
-      }));
-      next = { ...next, events: defaultEvents };
-    }
-    const committed: DayForm = { ...next, committedAt: new Date().toISOString() };
-    formRef.current = committed;
-    writeDraft(currentDraftKey, committed);
-    setForm(committed);
-    queueAutosave(committed, selectedDate);
+
+    const next: DayForm = { ...formRef.current };
+    const defaultMinutes = Math.max(1, Math.round(Number(defaultEvidenceMinutes) || 30));
+    const createdByPlan = new Map<string, LearningEvent>();
+    const createdPlanEvents: LearningEvent[] = [...new Set(selectedStandalone.map((item) => item.planId).filter((planId): planId is string => Boolean(planId)))].map((planId) => {
+      const created: LearningEvent = { id: createEventId(), title: "证据对应投入", category: defaultEvidenceCategory, minutes: defaultMinutes, planId, source: "manual", committed: true };
+      createdByPlan.set(planId, created);
+      return created;
+    });
+
+    next.events = next.events.map((event) => submitEventIds.includes(event.id) ? { ...event, committed: true } : event);
+    next.events = [...next.events, ...createdPlanEvents];
+    next.evidence = next.evidence.map((item) => {
+      if (!submitEvidenceIds.includes(item.id)) return item;
+      if (item.eventId && submitEventIds.includes(item.eventId)) return { ...item, committed: true };
+      if (!item.eventId && item.planId) {
+        const created = createdByPlan.get(item.planId);
+        return { ...item, committed: true, ...(created ? { eventId: created.id } : {}) };
+      }
+      return item;
+    });
+    next.committedAt = next.committedAt ?? new Date().toISOString();
+
+    const submittedEvents = selectedEvents.length + createdPlanEvents.length;
+    const submittedEvidence = next.evidence.filter((item) => submitEvidenceIds.includes(item.id) && item.committed).length;
+    formRef.current = next;
+    writeDraft(currentDraftKey, next);
+    setForm(next);
+    queueAutosave(next, selectedDate);
+    closeSubmitDialog();
     const saved = await flushAutosave();
-    if (saved) setMessage("已提交入账，该日计入统计。");
-    else setMessage("提交失败，已保留本地草稿，请稍后重试。");
+    if (saved) setMessage(`已提交 ${submittedEvents} 条事件、${submittedEvidence} 条证据，已进入统计。`);
+    else setMessage("提交失败，已保留本地，请稍后重试。");
+  }
+
+  function revertCommitted(kind: "event" | "evidence", id: string) {
+    const next: DayForm = {
+      ...formRef.current,
+      events: formRef.current.events.map((event) => kind === "event" && event.id === id ? { ...event, committed: false } : event),
+      evidence: formRef.current.evidence.map((item) => {
+        if (kind === "evidence" && item.id === id) return { ...item, committed: false };
+        if (kind === "event" && item.eventId === id) return { ...item, committed: false };
+        return item;
+      }),
+    };
+    next.committedAt = next.events.some((event) => event.committed) || next.evidence.some((item) => item.committed) ? next.committedAt : null;
+    formRef.current = next;
+    writeDraft(currentDraftKey, next);
+    setForm(next);
+    queueAutosave(next, selectedDate);
+    setMessage(kind === "event" ? "已撤销入账，事件及其证据回到面板。" : "已撤销入账，证据回到面板。");
   }
 
 
@@ -1544,6 +1639,7 @@ export function LearningDashboard() {
                 </div>
                 <div className="plan-composer-actions">
                   <button className="button button-secondary" type="button" onClick={() => { setPlanComposerOpen(false); setEditingPlanId(null); }}>取消</button>
+                  {editingPlanId && <button className="button button-secondary" type="button" disabled={planSaving} onClick={() => { const editingPlan = plans.find((plan) => plan.id === editingPlanId); if (editingPlan) void deletePlan(editingPlan); }}>删除计划</button>}
                   <button className="button" type="submit" disabled={planSaving}>{planSaving ? "正在保存…" : editingPlanId ? "保存修改" : "保存计划"}</button>
                 </div>
               </form>
@@ -1566,16 +1662,17 @@ export function LearningDashboard() {
                   <button className="button button-secondary" type="button" disabled={planSaving} onClick={() => unschedulePlan(plan)}>移出当天</button>
                   <select aria-label={`更新计划状态：${plan.title}`} value={plan.status} disabled={planSaving} onChange={(event) => void updateExistingPlan(plan, { status: event.target.value as PlanStatus }, `已更新「${plan.title}」状态。`)}>{(Object.keys(planStatusMeta) as PlanStatus[]).map((status) => <option key={status} value={status}>{planStatusMeta[status]}</option>)}</select>
                   <button className="button-quiet" type="button" disabled={planSaving} onClick={() => editPlan(plan)}>编辑</button>
+                  <button className="button-quiet" type="button" disabled={planSaving} onClick={() => void deletePlan(plan)}>删除</button>
                 </div>
               </article>) : <p className="empty-state">今天还没有排入计划。可以从下方需求库选择一项，或直接新建。</p>}
             </div>
 
-            <details className="plan-pool" open={otherOpenPlans.length < 4}>
+            <details className="plan-pool">
               <summary>未排入当天的进行中计划（{otherOpenPlans.length}）</summary>
               <div className="plan-list">
                 {otherOpenPlans.length ? otherOpenPlans.map((plan) => <article className="plan-row compact" data-status={plan.status} key={plan.id}>
                   <div className="plan-row-main"><div className="plan-badges"><span className={`plan-priority ${plan.priority}`}>{planPriorityMeta[plan.priority]}</span><span className={`plan-status ${plan.status}`}>{planStatusMeta[plan.status]}</span></div><strong>{plan.title}</strong><p><b>下一步：</b>{plan.next_action}</p><span className="plan-meta">目标日 {plan.target_date}{plan.scheduled_date ? ` · 当前安排 ${plan.scheduled_date}` : " · 尚未安排"}</span>{renderPlanEffort(plan.id)}</div>
-                  <div className="plan-row-actions"><button className="button button-secondary" type="button" disabled={planSaving} onClick={() => schedulePlan(plan)}>{plan.scheduled_date ? "改排到当天" : "排入当天"}</button><button className="button-quiet" type="button" disabled={planSaving} onClick={() => editPlan(plan)}>编辑</button></div>
+                  <div className="plan-row-actions"><button className="button button-secondary" type="button" disabled={planSaving} onClick={() => schedulePlan(plan)}>{plan.scheduled_date ? "改排到当天" : "排入当天"}</button><button className="button-quiet" type="button" disabled={planSaving} onClick={() => editPlan(plan)}>编辑</button><button className="button-quiet" type="button" disabled={planSaving} onClick={() => void deletePlan(plan)}>删除</button></div>
                 </article>) : <p className="empty-state">暂无其他未完成计划。</p>}
               </div>
             </details>
@@ -1583,7 +1680,7 @@ export function LearningDashboard() {
             <details className="plan-pool completed-plans">
               <summary>已完成计划（{completedPlans.length}）</summary>
               <div className="plan-list">
-                {completedPlans.map((plan) => <article className="plan-row compact" data-status={plan.status} key={plan.id}><div className="plan-row-main"><div className="plan-badges"><span className={`plan-priority ${plan.priority}`}>{planPriorityMeta[plan.priority]}</span><span className="plan-status completed">已完成</span></div><strong>{plan.title}</strong><p><b>最后下一步：</b>{plan.next_action}</p><span className="plan-meta">目标日 {plan.target_date}</span>{renderPlanEffort(plan.id)}</div><div className="plan-row-actions"><button className="button-quiet" type="button" disabled={planSaving} onClick={() => editPlan(plan)}>查看 / 重开</button></div></article>)}
+                {completedPlans.map((plan) => <article className="plan-row compact" data-status={plan.status} key={plan.id}><div className="plan-row-main"><div className="plan-badges"><span className={`plan-priority ${plan.priority}`}>{planPriorityMeta[plan.priority]}</span><span className="plan-status completed">已完成</span></div><strong>{plan.title}</strong><p><b>最后下一步：</b>{plan.next_action}</p><span className="plan-meta">目标日 {plan.target_date}</span>{renderPlanEffort(plan.id)}</div><div className="plan-row-actions"><button className="button-quiet" type="button" disabled={planSaving} onClick={() => editPlan(plan)}>查看 / 重开</button><button className="button-quiet" type="button" disabled={planSaving} onClick={() => void deletePlan(plan)}>删除</button></div></article>)}
                 {!completedPlans.length && <p className="empty-state">完成的计划会保留在这里，方便以后回看。</p>}
               </div>
             </details>
@@ -1656,7 +1753,7 @@ export function LearningDashboard() {
           </details>
 
           <div className="today-summary">
-            <div><span>今日已沉淀</span><strong>{formatMinutes(todayTotal)}</strong></div>
+            <div><span>今日草稿</span><strong>{formatMinutes(todayTotal)}</strong></div>
             <p>{mergedEvents.length ? `共 ${mergedEvents.length} 条可复盘事件` : "完成一次具体行动后，记录会出现在这里。"}</p>
           </div>
 
@@ -1698,19 +1795,36 @@ export function LearningDashboard() {
             }) : <p className="empty-state">还没有事件。选择一件 20 分钟内可完成的小事，点击“开始计时”。</p>}
           </div>
 
+          {(committedEvents.length > 0 || committedEvidence.length > 0) && <section className="committed-panel">
+            <div className="committed-panel-head"><span>已入账 · {committedEvents.length} 条事件 · {committedEvidence.length} 条证据</span><small>已进入统计与历史档案</small></div>
+            <div className="committed-list">
+              {committedEvents.map((event) => <div className="committed-row" key={event.id}><span><strong>{event.title}</strong><small>{categoryMeta[event.category].label}{event.planId ? " · 已关联计划" : ""} · {formatMinutes(event.minutes)}</small></span><button className="button-quiet" type="button" onClick={() => revertCommitted("event", event.id)}>撤销入账</button></div>)}
+              {committedEvidence.map((item) => <div className="committed-row" key={item.id}><span><strong>{item.type === "github_commit" ? item.title ?? item.message ?? "GitHub 提交" : item.text ?? item.url ?? "证据"}</strong><small>{item.type === "github_commit" ? "GitHub · " + (item.repo ?? "") : item.type === "link" ? "链接" : "文字"}{item.planId ? " · 已关联计划" : ""}</small></span><button className="button-quiet" type="button" onClick={() => revertCommitted("evidence", item.id)}>撤销入账</button></div>)}
+            </div>
+          </section>}
+
           <details className="notes-panel" open>
             <summary>计划复盘</summary>
             <div className="notes-grid">
               <div className="evidence-editor">
                 <div className="evidence-editor-head"><span>计划证据</span><button className="button-quiet" type="button" onClick={() => updateForm((current) => ({ ...current, evidence: [...current.evidence, { id: createEvidenceId(), type: "text", text: "", createdAt: new Date().toISOString() }] }))}>+ 添加证据</button></div>
-                 {form.evidence.map((item, index) => <div className={`evidence-item${item.type === "github_commit" ? " evidence-item-github" : ""}`} key={item.id}>
-                   <select value={item.planId ?? ""} onChange={(event) => updateForm((current) => ({ ...current, evidence: current.evidence.map((entry, entryIndex) => entryIndex === index ? { ...entry, planId: event.target.value || undefined } : entry) }))}>
-                     <option value="">选择关联计划</option>{plans.map((plan) => <option key={plan.id} value={plan.id}>{plan.title}</option>)}
-                   </select>
-                   {item.type === "github_commit" ? <div className="evidence-github-compact"><span className="evidence-github-mark">↗</span><span className="evidence-github-copy"><strong>{item.title ?? item.message ?? "GitHub 提交"}</strong><small>{item.repo ?? "GitHub"}</small></span>{item.commitUrl && <a href={item.commitUrl} target="_blank" rel="noreferrer">查看</a>}</div> : <textarea value={item.text ?? item.message ?? item.url ?? ""} placeholder="提交、脚本输出、实验结果或文档链接" onChange={(event) => updateForm((current) => ({ ...current, evidence: current.evidence.map((entry, entryIndex) => entryIndex === index ? { ...entry, text: event.target.value } : entry) }))} />}
-                   <div className="evidence-item-meta"><span>{item.type === "github_commit" ? "GitHub · " + (item.repo ?? "") : item.type === "link" ? "链接" : "文字"}</span><button className="button-quiet" type="button" onClick={() => updateForm((current) => ({ ...current, evidence: current.evidence.filter((_, entryIndex) => entryIndex !== index) }))}>删除</button></div>
+                 {activeEvidence.map((item) => <div className={`evidence-item${item.type === "github_commit" ? " evidence-item-github" : ""}`} key={item.id}>
+                   <div className="evidence-item-links">
+                     <select value={item.eventId ?? ""} onChange={(event) => updateForm((current) => {
+                       const eventId = event.target.value || undefined;
+                       const linkedEvent = eventId ? current.events.find((entry) => entry.id === eventId) : undefined;
+                       return { ...current, evidence: current.evidence.map((entry) => entry.id === item.id ? { ...entry, eventId, ...(linkedEvent?.planId ? { planId: linkedEvent.planId } : {}) } : entry) };
+                     })}>
+                       <option value="">关联到事件（可选）</option>{activeEvents.map((event) => <option key={event.id} value={event.id}>{event.title}</option>)}
+                     </select>
+                     {!item.eventId && <select value={item.planId ?? ""} onChange={(event) => updateForm((current) => ({ ...current, evidence: current.evidence.map((entry) => entry.id === item.id ? { ...entry, planId: event.target.value || undefined } : entry) }))}>
+                       <option value="">选择关联计划</option>{plans.map((plan) => <option key={plan.id} value={plan.id}>{plan.title}</option>)}
+                     </select>}
+                   </div>
+                   {item.type === "github_commit" ? <div className="evidence-github-compact"><span className="evidence-github-mark">↗</span><span className="evidence-github-copy"><strong>{item.title ?? item.message ?? "GitHub 提交"}</strong><small>{item.repo ?? "GitHub"}</small></span>{item.commitUrl && <a href={item.commitUrl} target="_blank" rel="noreferrer">查看</a>}</div> : <textarea value={item.text ?? item.message ?? item.url ?? ""} placeholder="提交、脚本输出、实验结果或文档链接" onChange={(event) => updateForm((current) => ({ ...current, evidence: current.evidence.map((entry) => entry.id === item.id ? { ...entry, text: event.target.value } : entry) }))} />}
+                   <div className="evidence-item-meta"><span>{item.type === "github_commit" ? "GitHub · " + (item.repo ?? "") : item.type === "link" ? "链接" : "文字"}</span><button className="button-quiet" type="button" onClick={() => updateForm((current) => ({ ...current, evidence: current.evidence.filter((entry) => entry.id !== item.id) }))}>删除</button></div>
                  </div>)}
-                {!form.evidence.length && <p className="empty-state">还没有证据。先选择计划、再添加提交、文档或结果。</p>}
+                {!activeEvidence.length && <p className="empty-state">还没有未提交的证据。添加提交、文档或结果后，关联事件即可提交入账。</p>}
                 <a className="evidence-github-link" href={"/github?date=" + selectedDate}>打开 GitHub 证据页 →</a>
               </div>
               <div className="plan-notes-list">
@@ -1741,11 +1855,7 @@ export function LearningDashboard() {
               {form.committedAt ? <span className="commit-badge committed">已入账</span> : (form.events.length > 0 || form.evidence.length > 0) && <span className="commit-badge draft">草稿</span>}
             </div>
             <div className="save-bar-actions">
-              {!form.events.length && linkedEvidenceCount > 0 && <div className="evidence-default-input">
-                <label><span>证据默认投入</span><input type="number" min={1} value={defaultEvidenceMinutes} onChange={(event) => setDefaultEvidenceMinutes(Number(event.target.value))} /></label>
-                <label><span>能力主线</span><select value={defaultEvidenceCategory} onChange={(event) => setDefaultEvidenceCategory(event.target.value as LearningCategory)}>{(Object.keys(categoryMeta) as LearningCategory[]).map((category) => <option key={category} value={category}>{categoryMeta[category].label}</option>)}</select></label>
-              </div>}
-              <button className="button" type="button" disabled={saving || dateChanging} onClick={commitDay}>提交入账</button>
+              <button className="button" type="button" disabled={saving || dateChanging || (!activeEvents.length && !standaloneEvidence.length)} onClick={openSubmitDialog}>提交入账</button>
               <button className="button button-secondary" type="button" disabled={saving || dateChanging} onClick={saveDay}>{saving ? "正在同步…" : "立即同步"}</button>
             </div>
           </div>
@@ -1782,6 +1892,35 @@ export function LearningDashboard() {
 
 
       <p className="footer-note">隐私：只使用公开或脱敏内容，不上传密码、身份信息、完整聊天记录或内部日志。</p>
+
+      {submitOpen && <div className="submit-overlay" role="dialog" aria-modal="true" aria-label="选择提交内容">
+        <div className="submit-dialog">
+          <div className="submit-dialog-head"><div><span className="eyebrow">提交入账</span><h2>选择要提交的内容</h2><p>事件与其关联证据一起入账；独立证据按默认投入生成事件。</p></div><button className="button-quiet" type="button" onClick={closeSubmitDialog}>关闭</button></div>
+          <div className="submit-dialog-body">
+            <div className="submit-section">
+              <div className="submit-section-head"><strong>事件（{activeEvents.length}）</strong><span>需至少关联一条证据</span></div>
+              {activeEvents.length ? activeEvents.map((event) => {
+                const linked = activeEvidence.filter((item) => item.eventId === event.id);
+                const checked = submitEventIds.includes(event.id);
+                const disabled = !linked.length;
+                return <div className={`submit-item${disabled ? " disabled" : ""}`} key={event.id}>
+                  <label className="submit-item-main"><input type="checkbox" checked={checked} disabled={disabled} onChange={() => toggleSubmitEvent(event.id)} /><span><strong>{event.title}</strong><small>{categoryMeta[event.category].label}{event.planId ? " · 已关联计划" : ""} · {formatMinutes(event.minutes)}</small></span></label>
+                  {disabled ? <em className="submit-item-hint">需先在证据中关联此事件</em> : linked.map((item) => <label className="submit-evidence" key={item.id}><input type="checkbox" checked={submitEvidenceIds.includes(item.id)} onChange={() => toggleSubmitEvidence(item.id)} /><span>{item.type === "github_commit" ? "GitHub · " + (item.repo ?? "") : item.type === "link" ? "链接" : "文字"}{item.planId ? " · 已关联计划" : ""}</span></label>)}
+                </div>;
+              }) : <p className="empty-state">面板中没有未提交的事件。</p>}
+            </div>
+            <div className="submit-section">
+              <div className="submit-section-head"><strong>独立证据（{standaloneEvidence.length}）</strong><span>无事件，提交时生成“证据对应投入”</span></div>
+              {standaloneEvidence.length ? standaloneEvidence.map((item) => <label className="submit-item submit-item-plain" key={item.id}><input type="checkbox" checked={submitEvidenceIds.includes(item.id)} onChange={() => toggleSubmitEvidence(item.id)} /><span><strong>{item.type === "github_commit" ? item.title ?? item.message ?? "GitHub 提交" : item.text ?? item.url ?? "证据"}</strong><small>{item.type === "github_commit" ? "GitHub · " + (item.repo ?? "") : item.type === "link" ? "链接" : "文字"} · 已关联计划</small></span></label>) : <p className="empty-state">没有可提交的独立证据。</p>}
+              {standaloneEvidence.some((item) => submitEvidenceIds.includes(item.id)) && <div className="evidence-default-input submit-default-input">
+                <label><span>证据默认投入</span><input type="number" min={1} value={defaultEvidenceMinutes} onChange={(event) => setDefaultEvidenceMinutes(Number(event.target.value))} /></label>
+                <label><span>能力主线</span><select value={defaultEvidenceCategory} onChange={(event) => setDefaultEvidenceCategory(event.target.value as LearningCategory)}>{(Object.keys(categoryMeta) as LearningCategory[]).map((category) => <option key={category} value={category}>{categoryMeta[category].label}</option>)}</select></label>
+              </div>}
+            </div>
+          </div>
+          <div className="submit-dialog-actions"><span>已选 {submitEventIds.length} 条事件 · {submitEvidenceIds.length} 条证据</span><div><button className="button button-secondary" type="button" onClick={closeSubmitDialog}>取消</button><button className="button" type="button" onClick={submitSelected}>确认提交</button></div></div>
+        </div>
+      </div>}
     </main>
   );
 }
