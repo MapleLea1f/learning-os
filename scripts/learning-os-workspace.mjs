@@ -5,6 +5,8 @@ import { execFile, execFileSync, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 
+// 连接器版本：修改连接器逻辑后请递增此版本，run-vinext 启动时会据此替换仍在运行的旧进程。
+const CONNECTOR_VERSION = "2026-08-19.1";
 const stateRoot = path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local"), "LearningOS");
 const statePath = path.join(stateRoot, "connector-state.json");
 const configPath = path.join(stateRoot, "connector-config.json");
@@ -365,6 +367,10 @@ async function startConnectorServer(values) {
         return;
       }
       const pathname = new URL(request.url || "/", `http://127.0.0.1:${port}`).pathname;
+      if (pathname === "/version" && request.method === "GET") {
+        writeHttpJson(response, 200, { ok: true, version: CONNECTOR_VERSION });
+        return;
+      }
       if (request.method !== "POST" || !["/connect", "/disconnect", "/open", "/pick", "/command"].includes(pathname)) {
         writeHttpJson(response, 404, { error: "Not found." });
         return;
