@@ -110,6 +110,14 @@ type PlanEffort = {
 };
 
 const activeTimerStorageKey = "learning-os:active-timer";
+const workspaceTimerContextStorageKey = "learning-os:workspace-timer-context";
+
+type WorkspaceTimerContext = {
+  workspaceId: string;
+  planId: string;
+  workspaceName?: string;
+  savedAt: number;
+};
 const autosaveDelay = 1200;
 
 type SyncStatus = "idle" | "pending" | "saving" | "saved" | "offline" | "error" | "local";
@@ -479,6 +487,18 @@ function createEventId() {
   return globalThis.crypto?.randomUUID?.() ?? `event-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
+function readWorkspaceTimerContext(): WorkspaceTimerContext | null {
+  try {
+    const raw = window.localStorage.getItem(workspaceTimerContextStorageKey);
+    if (!raw) return null;
+    const value = JSON.parse(raw) as Record<string, unknown>;
+    if (typeof value.workspaceId !== "string" || !value.workspaceId || typeof value.planId !== "string" || !value.planId || typeof value.savedAt !== "number") return null;
+    return { workspaceId: value.workspaceId, planId: value.planId, workspaceName: typeof value.workspaceName === "string" ? value.workspaceName : undefined, savedAt: value.savedAt };
+  } catch {
+    return null;
+  }
+}
+
 function readPersistedTimer(): PersistedTimer | null {
   try {
     const raw = window.localStorage.getItem(activeTimerStorageKey);
@@ -598,6 +618,7 @@ export function LearningDashboard() {
   const [editDraft, setEditDraft] = useState<EventEditDraft[]>([]);
   const [pendingTimerRecovery, setPendingTimerRecovery] = useState<PersistedTimer | null>(() => typeof window === "undefined" ? null : readPersistedTimer());
   const recoveringTimerRef = useRef<string | null>(null);
+  const appliedWorkspaceContextRef = useRef<string | null>(null);
   const githubSyncKeyRef = useRef<string | null>(null);
   const formRef = useRef(form);
   const saveVersionRef = useRef(0);
@@ -754,6 +775,25 @@ export function LearningDashboard() {
       }, autosaveDelay);
     }
   }, [authorized, configured, flushAutosave, session]);
+
+  useEffect(() => {
+    if (!plans.length || timerInProgress) return;
+    const applyWorkspaceContext = () => {
+      const context = readWorkspaceTimerContext();
+      if (!context) return;
+      const plan = plans.find((item) => item.id === context.planId && item.status !== "completed");
+      if (!plan) return;
+      const contextKey = `${context.workspaceId}:${context.planId}:${context.savedAt}`;
+      if (appliedWorkspaceContextRef.current === contextKey) return;
+      appliedWorkspaceContextRef.current = contextKey;
+      setTimerPlanId(plan.id);
+      setEventTitle((current) => current.trim() ? current : plan.title);
+      setMessage(`已根据工作区自动关联「${plan.title}」，开始计时后投入会记入该计划。`);
+    };
+    applyWorkspaceContext();
+    window.addEventListener("storage", applyWorkspaceContext);
+    return () => window.removeEventListener("storage", applyWorkspaceContext);
+  }, [plans, timerInProgress]);
 
   useEffect(() => {
     if (!timerStartedAt) return;

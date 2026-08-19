@@ -18,6 +18,7 @@ const executionStatusLabels: Record<WorkspaceExecutionStatus, string> = { in_pro
 const stepStatusLabels: Record<WorkspaceExecutionStepStatus, string> = { pending: "待处理", in_progress: "进行中", completed: "已完成", blocked: "已阻塞", cancelled: "已取消" };
 const resourceLabels: Record<WorkspaceResourceType, string> = { link: "网页链接", chatgpt: "历史 ChatGPT 链接（旧）", deepseek: "网页链接（旧）", local_path: "本地目录", file_output: "产出文件（旧）" };
 const resourceOptions = [["link", "网页链接"], ["local_path", "本地目录"]] as const;
+const workspaceTimerContextStorageKey = "learning-os:workspace-timer-context";
 type PairingResult = { ok?: boolean; cwd?: string; usedFallback?: boolean; error?: string };
 
 
@@ -78,6 +79,10 @@ export default function WorkspaceDetailPage() {
   const [resourceTitle, setResourceTitle] = useState("");
   const [resourceValue, setResourceValue] = useState("");
   const [resourceNote, setResourceNote] = useState("");
+  const [editingWorkspace, setEditingWorkspace] = useState(false);
+  const [workspaceName, setWorkspaceName] = useState("");
+  const [workspaceDescription, setWorkspaceDescription] = useState("");
+  const [workspaceLocalPath, setWorkspaceLocalPath] = useState("");
 
   const activeTasks = useMemo(() => tasks.filter((task) => task.status !== "completed"), [tasks]);
   const completedTasks = useMemo(() => tasks.filter((task) => task.status === "completed"), [tasks]);
@@ -132,6 +137,51 @@ export default function WorkspaceDetailPage() {
     void load();
     return () => { cancelled = true; };
   }, [session, workspaceId]);
+
+  useEffect(() => {
+    const requestedPlanId = new URLSearchParams(window.location.search).get("plan");
+    const activePlan = plans.find((plan) => plan.id === requestedPlanId && plan.status !== "completed") ?? plans.find((plan) => plan.status !== "completed");
+    if (!workspaceId || !activePlan) {
+      window.localStorage.removeItem(workspaceTimerContextStorageKey);
+      return;
+    }
+    try {
+      window.localStorage.setItem(workspaceTimerContextStorageKey, JSON.stringify({ workspaceId, planId: activePlan.id, workspaceName: workspace?.name ?? "", savedAt: Date.now() }));
+    } catch {
+      // Timer association remains available through manual selection if browser storage is unavailable.
+    }
+  }, [plans, workspace?.name, workspaceId]);
+
+  function openWorkspaceEditor() {
+    if (!workspace) return;
+    setWorkspaceName(workspace.name);
+    setWorkspaceDescription(workspace.description);
+    setWorkspaceLocalPath(workspace.local_path ?? "");
+    setEditingWorkspace(true);
+  }
+
+  async function saveWorkspace() {
+    if (!workspace || !session) return;
+    const name = workspaceName.trim();
+    if (!name) {
+      setMessage("工作区名称不能为空。");
+      return;
+    }
+    const client = getSupabase();
+    if (!client) return;
+    const { data, error } = await client.from("workspaces").update({
+      name,
+      description: workspaceDescription.trim(),
+      local_path: workspaceLocalPath.trim() || null,
+      updated_at: new Date().toISOString(),
+    }).eq("id", workspace.id).select("*").single();
+    if (error || !data) setMessage(`保存工作区失败：${error?.message ?? "未返回工作区"}`);
+    else {
+      setWorkspace(data as Workspace);
+      setEditingWorkspace(false);
+      setMessage("工作区信息已更新。");
+    }
+  }
 
   async function createTask(event: FormEvent) {
     event.preventDefault();
@@ -273,10 +323,10 @@ export default function WorkspaceDetailPage() {
   if (!workspace) return <main className="workspace-shell"><section className="workspace-card workspace-empty"><h1>工作区不存在</h1><Link className="button" href="/workspaces">返回工作区列表</Link></section></main>;
 
   return <main className="workspace-shell">
-    <header className="workspace-header"><div><div className="eyebrow">计划工作台</div><h1>{workspace.name}</h1><p>{workspace.description || "这个工作区还没有说明。"}</p>{workspace.local_path && <div className="workspace-local-path"><code className="workspace-path">{workspace.local_path}</code><button className="button-quiet" type="button" onClick={() => void openLocalPath(workspace.local_path || "").catch((error) => setMessage(error instanceof Error ? error.message : "打开本地路径失败。"))}>打开本地目录</button></div>}</div><div className="workspace-header-actions"><Link className="button button-secondary" href="/workspaces">工作区列表</Link><Link className="button button-secondary" href="/">返回日报</Link><button className="button" type="button" disabled={pairingLoading} onClick={() => void (pairingConnected ? cancelPairing() : createPairing())}>{pairingLoading ? "正在连接…" : pairingConnected ? "取消连接" : "连接本地连接器"}</button></div></header>
+    <header className="workspace-header"><div><div className="eyebrow">计划工作台</div><h1>{workspace.name}</h1><p>{workspace.description || "这个工作区还没有说明。"}</p>{workspace.local_path && <div className="workspace-local-path"><code className="workspace-path">{workspace.local_path}</code><button className="button-quiet" type="button" onClick={() => void openLocalPath(workspace.local_path || "").catch((error) => setMessage(error instanceof Error ? error.message : "打开本地路径失败。"))}>打开本地目录</button></div>}</div><div className="workspace-header-actions"><Link className="button button-secondary" href="/workspaces">工作区列表</Link><Link className="button button-secondary" href="/">返回日报</Link><button className="button button-secondary" type="button" onClick={openWorkspaceEditor}>编辑</button><button className="button" type="button" disabled={pairingLoading} onClick={() => void (pairingConnected ? cancelPairing() : createPairing())}>{pairingLoading ? "正在连接…" : pairingConnected ? "取消连接" : "连接本地连接器"}</button></div></header>
     {message && <p className="workspace-feedback" role="status">{message}</p>}
     {pairingCode && <section className={`workspace-card workspace-pairing${pairingConnected ? " connected" : " waiting"}`}><div className="workspace-card-head"><div><span className="eyebrow">本地连接器</span><h2>{pairingConnected ? "已连接" : "等待连接"}：{workspace.name}</h2></div><button className="button-quiet" type="button" disabled={pairingLoading} onClick={() => void cancelPairing()}>{pairingConnected ? "断开连接" : "取消连接"}</button></div>{pairingLoading && !pairingConnected ? <p className="workspace-pairing-status">正在连接本地连接器…</p> : pairingConnected ? <p className="workspace-pairing-status">已自动完成连接，运行 <code>evidence scan</code> 可同步 Git 提交证据。</p> : <div className="workspace-pairing-fallback"><p>自动连接失败，可运行下方命令手动连接（配对码 10 分钟内有效）：</p><code className="workspace-command">node scripts/learning-os-workspace.mjs connect --code {pairingCode} --cwd {workspace.local_path || "."}</code><p className="workspace-pairing-code">配对码 <strong>{pairingCode}</strong>，取消连接后立即失效。</p></div>}</section>}
-    <section className="workspace-detail-grid">
+    {editingWorkspace && workspace && <form className="workspace-card workspace-form" onSubmit={(event) => { event.preventDefault(); void saveWorkspace(); }}><div className="workspace-card-head"><div><span className="eyebrow">工作区设置</span><h2>编辑工作区</h2></div><button className="button-quiet" type="button" onClick={() => setEditingWorkspace(false)}>取消</button></div><div className="workspace-form-grid"><label><span>名称</span><input autoFocus value={workspaceName} placeholder="工作区名称" onChange={(event) => setWorkspaceName(event.target.value)} /></label><label><span>本地目录（可选）</span><div className="workspace-resource-picker"><input readOnly value={workspaceLocalPath} placeholder="点击选择工作区文件夹" /><button className="button button-secondary" type="button" onClick={() => void pickLocalPath("directory").then(setWorkspaceLocalPath).catch((error) => setMessage(error instanceof Error ? error.message : "选择工作区目录失败。"))}>选择文件夹</button></div></label><label className="workspace-wide-field"><span>说明（可选）</span><textarea value={workspaceDescription} placeholder="记录项目或工作内容" onChange={(event) => setWorkspaceDescription(event.target.value)} /></label></div><div className="workspace-form-actions"><button className="button" type="submit">保存修改</button></div></form>}    <section className="workspace-detail-grid">
       <div className="workspace-main-column">
         <section className="workspace-card"><div className="workspace-card-head"><div><span className="eyebrow">执行清单</span><h2>待办事项</h2></div><span>{activeTasks.length} 个未完成</span></div><form className="workspace-task-form" onSubmit={createTask}><input value={taskTitle} placeholder="添加一个需要推进的事项" onChange={(event) => setTaskTitle(event.target.value)} /><select value={taskPriority} onChange={(event) => setTaskPriority(event.target.value as WorkspaceTaskPriority)}>{Object.entries(priorityLabels).map(([value, label]) => <option key={value} value={value}>{label}优先级</option>)}</select><input type="date" value={taskDueDate} onChange={(event) => setTaskDueDate(event.target.value)} /><button className="button" type="submit" disabled={!taskTitle.trim()}>添加待办</button></form><div className="workspace-task-list">{activeTasks.map((task) => <article className={`workspace-task-row priority-${task.priority}`} key={task.id}>{editingTaskId === task.id ? <div className="workspace-task-edit"><input autoFocus value={editingTaskTitle} onChange={(event) => setEditingTaskTitle(event.target.value)} /><button className="button button-secondary" type="button" onClick={() => { void updateTask(task, { title: editingTaskTitle.trim() || task.title }); setEditingTaskId(null); }}>保存</button><button className="button-quiet" type="button" onClick={() => setEditingTaskId(null)}>取消</button></div> : <><input className="workspace-task-check" type="checkbox" checked={task.status === "completed"} onChange={() => void updateTask(task, { status: task.status === "completed" ? "todo" : "completed" })} /><div className="workspace-task-copy"><strong>{task.title}</strong><span>{priorityLabels[task.priority]}优先级 · {statusLabels[task.status]}{task.due_date ? ` · 截止 ${task.due_date}` : ""}</span>{task.notes && <small>{task.notes}</small>}</div><select value={task.status} onChange={(event) => void updateTask(task, { status: event.target.value as WorkspaceTaskStatus })}>{Object.entries(statusLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><button className="button-quiet" type="button" onClick={() => { setEditingTaskId(task.id); setEditingTaskTitle(task.title); }}>编辑</button><button className="button-quiet danger" type="button" onClick={() => void deleteTask(task)}>删除</button></>}</article>)}{!activeTasks.length && <p className="workspace-empty">还没有未完成待办，可以从一个最小动作开始。</p>}</div>{completedTasks.length > 0 && <details className="workspace-completed"><summary>已完成 {completedTasks.length} 项</summary>{completedTasks.map((task) => <div className="workspace-completed-row" key={task.id}><span>✓</span><strong>{task.title}</strong><button className="button-quiet" type="button" onClick={() => void updateTask(task, { status: "todo" })}>恢复</button></div>)}</details>}</section>
         <section className="workspace-card"><div className="workspace-card-head"><div><span className="eyebrow">执行记录</span><h2>步骤与验证</h2></div><span>{executions.length} 条</span></div><div className="workspace-execution-list">{executions.map((execution) => { const executionSteps = stepsByExecution.get(execution.id) ?? []; return <article className="workspace-execution-row" key={execution.id}><div className="workspace-execution-head"><strong>{execution.title}</strong><span className={`execution-status execution-${execution.status}`}>{executionStatusLabels[execution.status]}</span></div><small>{new Date(execution.started_at).toLocaleString("zh-CN")} · {execution.finished_at ? `用时 ${formatDuration(execution.started_at, execution.finished_at)}` : `进行中 ${formatDuration(execution.started_at, null)}`}</small>{executionSteps.length > 0 ? <ol className="workspace-step-list">{executionSteps.map((step) => <li className={`step-${step.status}`} key={step.id}><span>{step.status === "completed" ? "✓" : step.status === "in_progress" ? "●" : step.status === "blocked" ? "!" : "○"}</span><span>{step.title}</span><span className="step-status-label">{stepStatusLabels[step.status]}</span></li>)}</ol> : <small className="workspace-step-empty">暂无步骤</small>}</article>; })}{!executions.length && <p className="workspace-empty">连接本地连接器后，Codex 会话的执行步骤和验证记录会显示在这里。</p>}</div></section>
@@ -293,7 +343,7 @@ export default function WorkspaceDetailPage() {
         </section>
         <section className="workspace-card"><div className="workspace-card-head"><div><span className="eyebrow">Git 提交证据</span><h2>最近的提交证据</h2></div><span>{evidence.length} 条</span></div><div className="workspace-evidence-list">{evidence.map((item) => <article className="workspace-evidence-row" key={item.id}><div><strong>{item.title}</strong><small>{item.content} · {new Date(item.observed_at).toLocaleString("zh-CN")}</small>{item.metadata?.files?.length ? <small>涉及 {item.metadata.files.slice(0, 3).join(", ")}{item.metadata.files.length > 3 ? ` 等 ${item.metadata.files.length} 个文件` : ""}</small> : null}</div>{item.metadata?.commit ? <code>{item.metadata.commit.slice(0, 8)}</code> : null}</article>)}{!evidence.length && <p className="workspace-empty">连接本地连接器后运行 evidence scan，同步 Git 提交。</p>}</div></section>
       </div>
-      <aside className="workspace-side-column"><section className="workspace-card"><div className="workspace-card-head"><div><span className="eyebrow">关联计划</span><h2>计划</h2></div><span>{plans.length} 个</span></div>{plans.map((plan) => <Link className="workspace-plan-row" href="/" key={plan.id}><strong>{plan.title}</strong><span>{plan.status}</span><p className="workspace-plan-details">{plan.details || "暂无需求说明"}</p></Link>)}{!plans.length && <p className="workspace-empty">还没有关联计划。</p>}</section><section className="workspace-card workspace-note-card"><span className="eyebrow">联动说明</span><p>连接本地连接器后，Codex 会话会读取待办，并在此记录执行步骤、验证命令和 Git 证据。</p></section></aside>
+      <aside className="workspace-side-column"><section className="workspace-card"><div className="workspace-card-head"><div><span className="eyebrow">关联计划</span><h2>计划</h2></div><span>{plans.length} 个</span></div>{plans.map((plan) => <Link className="workspace-plan-row" href="/" key={plan.id}><strong>{plan.title}</strong><span>{plan.status}</span><p className="workspace-plan-details">{plan.details || "暂无需求说明"}</p></Link>)}{!plans.length && <p className="workspace-empty">还没有关联计划。</p>}</section><section className="workspace-card workspace-note-card"><span className="eyebrow">联动说明</span><p>当前工作区的活动计划会自动成为计时归属；开始计时后投入会记入该计划。连接本地连接器后，Codex 会话还会在此记录执行步骤、验证命令和 Git 证据。</p></section></aside>
     </section>
   </main>;
 }

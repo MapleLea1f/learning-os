@@ -300,7 +300,7 @@ async function pickLocalPath(kind) {
     ? "$dialog = New-Object System.Windows.Forms.OpenFileDialog; $dialog.Title = '选择文件'; $dialog.Multiselect = $false; if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $dialog.FileName }"
     : "$dialog = New-Object System.Windows.Forms.FolderBrowserDialog; $dialog.Description = '选择文件夹'; if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $dialog.SelectedPath }";
   const owner = "Add-Type -AssemblyName System.Windows.Forms; $owner = New-Object System.Windows.Forms.Form; $owner.TopMost = $true; $owner.ShowInTaskbar = $false; $owner.Opacity = 0; $owner.StartPosition = 'CenterScreen'; $owner.Show()";
-  const selected = execFileSync("powershell.exe", ["-NoProfile", "-STA", "-Command", `${owner}; ${pick}; $dialog.Dispose(); $owner.Dispose()`], { encoding: "utf8", windowsHide: true }).trim();
+  const selected = execFileSync("powershell.exe", ["-NoProfile", "-STA", "-Command", `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; ${owner}; ${pick}; $dialog.Dispose(); $owner.Dispose()`], { encoding: "utf8", windowsHide: true }).trim();
   return selected || null;
 }
 function readHttpBody(request) {

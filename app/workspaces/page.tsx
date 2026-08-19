@@ -1,6 +1,6 @@
 "use client";
 
-/* eslint-disable react-hooks/set-state-in-effect, react-hooks/purity */
+/* eslint-disable react-hooks/set-state-in-effect */
 
 import Link from "next/link";
 import { FormEvent, useEffect, useMemo, useState } from "react";
@@ -36,6 +36,10 @@ export default function WorkspacesPage() {
   const [pairingWorkspace, setPairingWorkspace] = useState<Workspace | null>(null);
   const [pairingLoading, setPairingLoading] = useState(false);
   const [pairingConnected, setPairingConnected] = useState(false);
+  const [editingWorkspace, setEditingWorkspace] = useState<Workspace | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editDescription, setEditDescription] = useState("");
+  const [editLocalPath, setEditLocalPath] = useState("");
 
   const workspacePlans = useMemo(() => plans.reduce<Record<string, number>>((counts, plan) => {
     if (plan.workspace_id) counts[plan.workspace_id] = (counts[plan.workspace_id] ?? 0) + 1;
@@ -108,6 +112,38 @@ export default function WorkspacesPage() {
       }
     }
     setSaving(false);
+  }
+
+  function openWorkspaceEditor(workspace: Workspace) {
+    setEditingWorkspace(workspace);
+    setEditName(workspace.name);
+    setEditDescription(workspace.description);
+    setEditLocalPath(workspace.local_path ?? "");
+  }
+
+  async function saveWorkspaceEdit() {
+    if (!editingWorkspace) return;
+    const name = editName.trim();
+    if (!name) {
+      setMessage("工作区名称不能为空。");
+      return;
+    }
+    const client = getSupabase();
+    if (!client) return;
+    setSaving(true);
+    const { data, error } = await client.from("workspaces").update({
+      name,
+      description: editDescription.trim(),
+      local_path: editLocalPath.trim() || null,
+      updated_at: new Date().toISOString(),
+    }).eq("id", editingWorkspace.id).select("*").single();
+    setSaving(false);
+    if (error || !data) setMessage(`保存工作区失败：${error?.message ?? "未返回工作区"}`);
+    else {
+      setWorkspaces((current) => current.map((item) => item.id === editingWorkspace.id ? data as Workspace : item));
+      setEditingWorkspace(null);
+      setMessage("工作区信息已更新。");
+    }
   }
 
   async function createPairing(workspace: Workspace) {
@@ -207,8 +243,9 @@ export default function WorkspacesPage() {
     <section className="workspace-card workspace-setup-card"><strong>本地连接器</strong><p>点击“连接本地连接器”完成配对，之后运行 <code>evidence scan</code> 即可同步 Git 提交证据。</p></section>
     {formOpen && <form className="workspace-card workspace-form" onSubmit={createWorkspace}><div className="workspace-card-head"><div><span className="eyebrow">新的上下文</span><h2>创建工作区</h2></div><button className="button-quiet" type="button" onClick={() => setFormOpen(false)}>取消</button></div><div className="workspace-form-grid"><label><span>名称</span><input autoFocus value={name} placeholder="例如：Learning OS 项目" onChange={(event) => setName(event.target.value)} /></label><label><span>关联计划</span><select value={planId} onChange={(event) => setPlanId(event.target.value)}><option value="">选择一个计划</option>{plans.filter((plan) => !plan.workspace_id).map((plan) => <option key={plan.id} value={plan.id}>{plan.title}</option>)}</select></label><label><span>本地目录（可选）</span><div className="workspace-resource-picker"><input readOnly value={localPath} placeholder="点击选择工作区文件夹" /><button className="button button-secondary" type="button" onClick={() => void pickWorkspaceDirectory().then(setLocalPath).catch((error) => setMessage(error instanceof Error ? error.message : "选择工作区目录失败。"))}>选择文件夹</button></div></label><label className="workspace-wide-field"><span>说明（可选）</span><textarea value={description} placeholder="记录项目或工作内容" onChange={(event) => setDescription(event.target.value)} /></label></div><div className="workspace-form-actions"><button className="button" type="submit" disabled={saving || !name.trim() || !planId}>{saving ? "正在创建…" : "创建工作区"}</button></div></form>}
     {message && <p className="workspace-feedback" role="status">{message}</p>}
+    {editingWorkspace && <form className="workspace-card workspace-form" onSubmit={(event) => { event.preventDefault(); void saveWorkspaceEdit(); }}><div className="workspace-card-head"><div><span className="eyebrow">工作区设置</span><h2>编辑工作区：{editingWorkspace.name}</h2></div><button className="button-quiet" type="button" onClick={() => setEditingWorkspace(null)}>取消</button></div><div className="workspace-form-grid"><label><span>名称</span><input autoFocus value={editName} placeholder="工作区名称" onChange={(event) => setEditName(event.target.value)} /></label><label><span>本地目录（可选）</span><div className="workspace-resource-picker"><input readOnly value={editLocalPath} placeholder="点击选择工作区文件夹" /><button className="button button-secondary" type="button" onClick={() => void pickWorkspaceDirectory().then(setEditLocalPath).catch((error) => setMessage(error instanceof Error ? error.message : "选择工作区目录失败。"))}>选择文件夹</button></div></label><label className="workspace-wide-field"><span>说明（可选）</span><textarea value={editDescription} placeholder="记录项目或工作内容" onChange={(event) => setEditDescription(event.target.value)} /></label></div><div className="workspace-form-actions"><button className="button" type="submit" disabled={saving}>{saving ? "正在保存…" : "保存修改"}</button></div></form>}
     {pairingWorkspace && <section className={`workspace-card workspace-pairing${pairingConnected ? " connected" : " waiting"}`}><div className="workspace-card-head"><div><span className="eyebrow">本地连接器</span><h2>{pairingConnected ? "已连接" : "等待连接"}：{pairingWorkspace.name}</h2></div><button className="button-quiet" type="button" disabled={pairingLoading} onClick={() => void cancelPairing()}>{pairingConnected ? "断开连接" : "取消连接"}</button></div>{pairingLoading && !pairingConnected ? <p className="workspace-pairing-status">正在连接本地连接器…</p> : pairingConnected ? <p className="workspace-pairing-status">已自动完成连接，运行 <code>evidence scan</code> 可同步 Git 提交证据。</p> : <div className="workspace-pairing-fallback"><p>自动连接失败，可运行下方命令手动连接（配对码 10 分钟内有效）：</p><code className="workspace-command">node scripts/learning-os-workspace.mjs connect --code {pairingCode} --cwd {pairingWorkspace.local_path || "."}</code><p className="workspace-pairing-code">配对码 <strong>{pairingCode}</strong>，取消连接后立即失效。</p></div>}</section>}
-    {loading ? <p className="workspace-empty">正在读取工作区…</p> : <section className="workspace-grid">{workspaces.map((workspace) => <article className="workspace-card workspace-list-card" key={workspace.id}><div className="workspace-card-head"><div><span className="eyebrow">工作区</span><h2>{workspace.name}</h2></div><span className="workspace-status">{workspace.status === "active" ? "使用中" : "已归档"}</span></div><p>{workspace.description || "暂无说明。"}</p>{workspace.local_path && <code className="workspace-path">{workspace.local_path}</code>}<div className="workspace-stats"><span>{workspacePlans[workspace.id] ?? 0} 个关联计划</span><span>{taskCounts[workspace.id] ?? 0} 个待办</span></div><div className="workspace-card-actions"><Link className="button button-secondary" href={`/workspace/${workspace.id}`}>打开工作区</Link><button className="button-quiet" type="button" disabled={pairingLoading} onClick={() => void createPairing(workspace)}>连接本地连接器</button></div></article>)}{!workspaces.length && <div className="workspace-card workspace-empty"><h2>还没有工作区</h2><p>{plans.some((plan) => !plan.workspace_id) ? "可从上方选择一个未关联计划。" : "暂无可关联计划，请先创建计划。"}</p></div>}</section>}
+    {loading ? <p className="workspace-empty">正在读取工作区…</p> : <section className="workspace-grid">{workspaces.map((workspace) => <article className="workspace-card workspace-list-card" key={workspace.id}><div className="workspace-card-head"><div><span className="eyebrow">工作区</span><h2>{workspace.name}</h2></div><span className="workspace-status">{workspace.status === "active" ? "使用中" : "已归档"}</span></div><p>{workspace.description || "暂无说明。"}</p>{workspace.local_path && <code className="workspace-path">{workspace.local_path}</code>}<div className="workspace-stats"><span>{workspacePlans[workspace.id] ?? 0} 个关联计划</span><span>{taskCounts[workspace.id] ?? 0} 个待办</span></div><div className="workspace-card-actions"><Link className="button button-secondary" href={`/workspace/${workspace.id}`}>打开工作区</Link><button className="button-quiet" type="button" onClick={() => openWorkspaceEditor(workspace)}>编辑</button><button className="button-quiet" type="button" disabled={pairingLoading} onClick={() => void createPairing(workspace)}>连接本地连接器</button></div></article>)}{!workspaces.length && <div className="workspace-card workspace-empty"><h2>还没有工作区</h2><p>{plans.some((plan) => !plan.workspace_id) ? "可从上方选择一个未关联计划。" : "暂无可关联计划，请先创建计划。"}</p></div>}</section>}
   </main>;
 }
 
